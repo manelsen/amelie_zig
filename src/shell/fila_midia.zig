@@ -8,21 +8,21 @@ const msg_m = @import("../dominio/mensagem.zig");
 pub fn FilaMidia(comptime IA: type) type {
     return struct {
         pub const Tarefa = struct {
-            chat_id:       []const u8,
-            msg_id:        []const u8,
-            midia:         msg_m.Conteudo.Midia,
+            chat_id: []const u8,
+            msg_id: []const u8,
+            midia: msg_m.Conteudo.Midia,
             system_prompt: ?[]const u8,
         };
 
         allocator: std.mem.Allocator,
-        ia:        *IA,
-        enviarFn:  *const fn ([]const u8, []const u8) void,
-        reagirFn:  *const fn ([]const u8, []const u8, []const u8) void,
+        ia: *IA,
+        enviarFn: *const fn ([]const u8, []const u8) void,
+        reagirFn: *const fn ([]const u8, []const u8, []const u8) void,
 
-        mutex:      std.Thread.Mutex,
-        cond:       std.Thread.Condition,
-        tarefas:    std.ArrayListUnmanaged(Tarefa),
-        threads:    []std.Thread,
+        mutex: std.Thread.Mutex,
+        cond: std.Thread.Condition,
+        tarefas: std.ArrayListUnmanaged(Tarefa),
+        threads: []std.Thread,
         encerrando: bool,
 
         const Self = @This();
@@ -36,14 +36,14 @@ pub fn FilaMidia(comptime IA: type) type {
         ) !*Self {
             const self = try allocator.create(Self);
             self.* = .{
-                .allocator  = allocator,
-                .ia         = ia,
-                .enviarFn   = enviarFn,
-                .reagirFn   = reagirFn,
-                .mutex      = .{},
-                .cond       = .{},
-                .tarefas    = .{},
-                .threads    = try allocator.alloc(std.Thread, num_threads),
+                .allocator = allocator,
+                .ia = ia,
+                .enviarFn = enviarFn,
+                .reagirFn = reagirFn,
+                .mutex = .{},
+                .cond = .{},
+                .tarefas = .{},
+                .threads = try allocator.alloc(std.Thread, num_threads),
                 .encerrando = false,
             };
 
@@ -80,11 +80,11 @@ pub fn FilaMidia(comptime IA: type) type {
 
             const t = Tarefa{
                 .chat_id = try self.allocator.dupe(u8, chat_id),
-                .msg_id  = try self.allocator.dupe(u8, msg_id),
+                .msg_id = try self.allocator.dupe(u8, msg_id),
                 .midia = .{
-                    .tipo     = midia.tipo,
-                    .url      = try self.allocator.dupe(u8, midia.url),
-                    .caption  = if (midia.caption) |c| try self.allocator.dupe(u8, c) else null,
+                    .tipo = midia.tipo,
+                    .url = try self.allocator.dupe(u8, midia.url),
+                    .caption = if (midia.caption) |c| try self.allocator.dupe(u8, c) else null,
                     .mimetype = if (midia.mimetype) |m| try self.allocator.dupe(u8, m) else null,
                     .filename = if (midia.filename) |f| try self.allocator.dupe(u8, f) else null,
                 },
@@ -162,9 +162,7 @@ pub fn FilaMidia(comptime IA: type) type {
 
             const uri = try std.Uri.parse(t.midia.url);
 
-            var req = try client.request(.GET, uri, .{
-                .headers = .{ .accept_encoding = .{ .override = "identity" } }
-            });
+            var req = try client.request(.GET, uri, .{ .headers = .{ .accept_encoding = .{ .override = "identity" } } });
             defer req.deinit();
 
             try req.sendBodiless();
@@ -179,16 +177,16 @@ pub fn FilaMidia(comptime IA: type) type {
             // Lê o corpo inteiro de forma simples e robusta no Zig 0.15
             var body_list = std.ArrayListUnmanaged(u8){};
             defer body_list.deinit(temp_alloc);
-            
+
             var buf: [8192]u8 = undefined;
-            // No Zig 0.15, o Reader é uma struct que possui o método readSliceShort().
-            var reader = head.reader(&.{});
+            var transfer_buffer: [8192]u8 = undefined;
+            var reader = head.reader(&transfer_buffer);
             while (true) {
                 const n = try reader.readSliceShort(&buf);
                 if (n == 0) break;
                 try body_list.appendSlice(temp_alloc, buf[0..n]);
             }
-            
+
             const payload = body_list.items;
 
             const b64_len = std.base64.standard.Encoder.calcSize(payload.len);
@@ -203,18 +201,18 @@ pub fn FilaMidia(comptime IA: type) type {
 
             if (std.mem.eql(u8, mime, "application/octet-stream")) {
                 const MimeMap = std.StaticStringMap([]const u8).initComptime(.{
-                    .{ ".jpg",   "image/jpeg" },
-                    .{ ".jpeg",  "image/jpeg" },
-                    .{ ".png",   "image/png" },
-                    .{ ".pdf",   "application/pdf" },
-                    .{ ".ogg",   "audio/ogg" },
-                    .{ ".mp3",   "audio/mpeg" },
-                    .{ ".mp4",   "video/mp4" },
-                    .{ ".txt",   "text/plain" },
-                    .{ ".csv",   "text/csv" },
-                    .{ ".docx",  "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
-                    .{ ".xlsx",  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
-                    .{ ".pptx",  "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+                    .{ ".jpg", "image/jpeg" },
+                    .{ ".jpeg", "image/jpeg" },
+                    .{ ".png", "image/png" },
+                    .{ ".pdf", "application/pdf" },
+                    .{ ".ogg", "audio/ogg" },
+                    .{ ".mp3", "audio/mpeg" },
+                    .{ ".mp4", "video/mp4" },
+                    .{ ".txt", "text/plain" },
+                    .{ ".csv", "text/csv" },
+                    .{ ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+                    .{ ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+                    .{ ".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
                 });
 
                 const alvo = t.midia.filename orelse t.midia.url;
@@ -251,7 +249,9 @@ const MockIA = struct {
         _p: ?[]const u8,
         alloc: std.mem.Allocator,
     ) ![]const u8 {
-        _ = _d; _ = _m; _ = _p;
+        _ = _d;
+        _ = _m;
+        _ = _p;
         self.chamadas += 1;
         return alloc.dupe(u8, self.resposta);
     }
@@ -259,13 +259,15 @@ const MockIA = struct {
 
 const Captura = struct {
     chat_id: []const u8 = "",
-    texto:   []const u8 = "",
-    msg_id:  []const u8 = "",
-    emoji:   []const u8 = "",
-    _tbuf:   [1024]u8   = undefined,
+    texto: []const u8 = "",
+    msg_id: []const u8 = "",
+    emoji: []const u8 = "",
+    _tbuf: [1024]u8 = undefined,
     var instancia: Captura = .{};
 
-    fn reset() void { instancia = .{}; }
+    fn reset() void {
+        instancia = .{};
+    }
 
     fn enviar(c: []const u8, t: []const u8) void {
         const tl = @min(t.len, instancia._tbuf.len);
@@ -276,8 +278,8 @@ const Captura = struct {
 
     fn reagir(c: []const u8, m: []const u8, e: []const u8) void {
         instancia.chat_id = c;
-        instancia.msg_id  = m;
-        instancia.emoji   = e;
+        instancia.msg_id = m;
+        instancia.emoji = e;
     }
 };
 

@@ -7,19 +7,19 @@
 //
 // Zig 0.15: std.http.Client com novo padrão de Reader/Writer.
 
-const std      = @import("std");
+const std = @import("std");
 const file_api = @import("google_file_api.zig");
 
 pub const MODELO_PADRAO = "gemini-2.5-flash-lite";
-pub const URL_BASE      = "https://generativelanguage.googleapis.com/v1beta/models/";
+pub const URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
 
 pub const GeminiConfig = struct {
-    api_key:          []const u8,
-    modelo:           []const u8 = MODELO_PADRAO,
-    temperature:      f64        = 0.9,
-    top_k:            u32        = 1,
-    top_p:            f64        = 0.95,
-    max_tokens:       u32        = 1024,
+    api_key: []const u8,
+    modelo: []const u8 = MODELO_PADRAO,
+    temperature: f64 = 0.9,
+    top_k: u32 = 1,
+    top_p: f64 = 0.95,
+    max_tokens: u32 = 1024,
 };
 
 pub const ErroGemini = error{
@@ -35,7 +35,7 @@ pub const ErroGemini = error{
 // ---------------------------------------------------------------------------
 
 pub const GeminiAdapter = struct {
-    config:    GeminiConfig,
+    config: GeminiConfig,
     allocator: std.mem.Allocator,
 
     pub fn init(config: GeminiConfig, allocator: std.mem.Allocator) GeminiAdapter {
@@ -45,13 +45,16 @@ pub const GeminiAdapter = struct {
     /// Gera texto a partir de prompt + system prompt opcional.
     /// Retorna slice alocado — caller é responsável por liberar.
     pub fn gerarTexto(
-        self:          *GeminiAdapter,
-        prompt:        []const u8,
+        self: *GeminiAdapter,
+        prompt: []const u8,
         system_prompt: ?[]const u8,
-        allocator:     std.mem.Allocator,
+        allocator: std.mem.Allocator,
     ) ![]const u8 {
         const body = try montarBodyTexto(
-            self.config, prompt, system_prompt, allocator,
+            self.config,
+            prompt,
+            system_prompt,
+            allocator,
         );
         defer allocator.free(body);
 
@@ -61,10 +64,10 @@ pub const GeminiAdapter = struct {
     /// Processa mídia inline (imagem, áudio, documento) ou vídeo via File API.
     /// `dados` é base64 do conteúdo; `mimetype` ex: "image/jpeg" ou "video/mp4".
     pub fn processarMidia(
-        self:      *GeminiAdapter,
-        dados:     []const u8,   // base64
-        mimetype:  []const u8,
-        prompt:    ?[]const u8,
+        self: *GeminiAdapter,
+        dados: []const u8, // base64
+        mimetype: []const u8,
+        prompt: ?[]const u8,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
         // Vídeo: decodifica base64 → bytes crus → File API (não suporta inline)
@@ -84,15 +87,18 @@ pub const GeminiAdapter = struct {
     }
 
     fn processarVideoViaFileApi(
-        self:      *GeminiAdapter,
-        dados_raw: []const u8,  // bytes crus (não base64)
-        mimetype:  []const u8,
-        prompt:    ?[]const u8,
+        self: *GeminiAdapter,
+        dados_raw: []const u8, // bytes crus (não base64)
+        mimetype: []const u8,
+        prompt: ?[]const u8,
         allocator: std.mem.Allocator,
     ) ![]const u8 {
         // 1. Upload → obtém fileUri
         const file_uri = try file_api.uploadArquivo(
-            self.config.api_key, dados_raw, mimetype, allocator,
+            self.config.api_key,
+            dados_raw,
+            mimetype,
+            allocator,
         );
         defer allocator.free(file_uri);
 
@@ -126,16 +132,11 @@ pub const GeminiAdapter = struct {
 
         const uri = std.Uri.parse(url_str) catch return ErroGemini.UrlInvalida;
 
-        var req = try client.request(.POST, uri, .{
-            .headers = .{ 
-                .content_type = .{ .override = "application/json" },
-                .accept_encoding = .{ .override = "identity" }
-            }
-        });
+        var req = try client.request(.POST, uri, .{ .headers = .{ .content_type = .{ .override = "application/json" }, .accept_encoding = .{ .override = "identity" } } });
         defer req.deinit();
 
         req.transfer_encoding = .{ .content_length = body.len };
-        
+
         var payload_stream = try req.sendBodyUnflushed(&.{});
         try payload_stream.writer.writeAll(body);
         try payload_stream.end();
@@ -145,28 +146,30 @@ pub const GeminiAdapter = struct {
         var response = try req.receiveHead(&redirect_buf);
 
         if (response.head.status != .ok) {
-            var err_reader = response.reader(&.{});
+            var inner_err_buf: [8192]u8 = undefined;
+            var err_reader = response.reader(&inner_err_buf);
             var err_buf = std.ArrayListUnmanaged(u8){};
             defer err_buf.deinit(allocator);
-            var transfer_buffer: [8192]u8 = undefined;
+            var read_buf: [8192]u8 = undefined;
             while (true) {
-                const len = try err_reader.readSliceShort(&transfer_buffer);
+                const len = try err_reader.readSliceShort(&read_buf);
                 if (len == 0) break;
-                try err_buf.appendSlice(allocator, transfer_buffer[0..len]);
+                try err_buf.appendSlice(allocator, read_buf[0..len]);
             }
             std.log.err("Gemini API Error: Status {d} - {s}", .{ @intFromEnum(response.head.status), err_buf.items });
             return ErroGemini.HttpError;
         }
 
-        var reader = response.reader(&.{});
+        var inner_buf: [8192]u8 = undefined;
+        var reader = response.reader(&inner_buf);
         var res_buf = std.ArrayListUnmanaged(u8){};
         defer res_buf.deinit(allocator);
 
-        var transfer_buffer: [8192]u8 = undefined;
+        var read_buf: [8192]u8 = undefined;
         while (true) {
-            const len = try reader.readSliceShort(&transfer_buffer);
+            const len = try reader.readSliceShort(&read_buf);
             if (len == 0) break;
-            try res_buf.appendSlice(allocator, transfer_buffer[0..len]);
+            try res_buf.appendSlice(allocator, read_buf[0..len]);
         }
 
         return extrairTextoResposta(res_buf.items, allocator);
@@ -178,10 +181,10 @@ pub const GeminiAdapter = struct {
 // ---------------------------------------------------------------------------
 
 fn montarBodyTexto(
-    cfg:           GeminiConfig,
-    prompt:        []const u8,
+    cfg: GeminiConfig,
+    prompt: []const u8,
     system_prompt: ?[]const u8,
-    allocator:     std.mem.Allocator,
+    allocator: std.mem.Allocator,
 ) ![]const u8 {
     var buf = std.ArrayListUnmanaged(u8){};
     const w = buf.writer(allocator);
@@ -207,10 +210,10 @@ fn montarBodyTexto(
 }
 
 fn montarBodyMidia(
-    cfg:      GeminiConfig,
-    dados:    []const u8,
+    cfg: GeminiConfig,
+    dados: []const u8,
     mimetype: []const u8,
-    prompt:   []const u8,
+    prompt: []const u8,
     allocator: std.mem.Allocator,
 ) ![]const u8 {
     var buf = std.ArrayListUnmanaged(u8){};
@@ -233,10 +236,10 @@ fn montarBodyMidia(
 }
 
 fn montarBodyVideoFileApi(
-    cfg:      GeminiConfig,
+    cfg: GeminiConfig,
     file_uri: []const u8,
     mimetype: []const u8,
-    prompt:   []const u8,
+    prompt: []const u8,
     allocator: std.mem.Allocator,
 ) ![]const u8 {
     var buf = std.ArrayListUnmanaged(u8){};
@@ -261,7 +264,10 @@ fn montarBodyVideoFileApi(
 /// Extrai o texto de `candidates[0].content.parts[0].text` da resposta Gemini.
 fn extrairTextoResposta(json_raw: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     const parsed = std.json.parseFromSlice(
-        std.json.Value, allocator, json_raw, .{},
+        std.json.Value,
+        allocator,
+        json_raw,
+        .{},
     ) catch return ErroGemini.JsonMalformado;
     defer parsed.deinit();
 
@@ -279,7 +285,7 @@ fn extrairTextoResposta(json_raw: []const u8, allocator: std.mem.Allocator) ![]c
     if (candidates != .array or candidates.array.items.len == 0) return ErroGemini.RespostaVazia;
 
     const content = candidates.array.items[0].object.get("content") orelse return ErroGemini.RespostaVazia;
-    const parts   = content.object.get("parts") orelse return ErroGemini.RespostaVazia;
+    const parts = content.object.get("parts") orelse return ErroGemini.RespostaVazia;
     if (parts != .array or parts.array.items.len == 0) return ErroGemini.RespostaVazia;
 
     const text = parts.array.items[0].object.get("text") orelse return ErroGemini.RespostaVazia;
@@ -301,9 +307,9 @@ fn limparResposta(texto: []const u8) []const u8 {
 }
 
 fn promptPadraoPorMime(mimetype: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, mimetype, "image/"))       return "Descreva esta imagem.";
-    if (std.mem.startsWith(u8, mimetype, "audio/"))       return "Transcreva este áudio.";
-    if (std.mem.startsWith(u8, mimetype, "video/"))       return "Descreva este vídeo.";
+    if (std.mem.startsWith(u8, mimetype, "image/")) return "Descreva esta imagem.";
+    if (std.mem.startsWith(u8, mimetype, "audio/")) return "Transcreva este áudio.";
+    if (std.mem.startsWith(u8, mimetype, "video/")) return "Descreva este vídeo.";
     return "Analise este documento.";
 }
 
@@ -315,7 +321,7 @@ fn escreverStringJson(w: anytype, s: []const u8) !void {
     try w.writeByte('"');
     for (s) |c| {
         switch (c) {
-            '"'  => try w.writeAll("\\\""),
+            '"' => try w.writeAll("\\\""),
             '\\' => try w.writeAll("\\\\"),
             '\n' => try w.writeAll("\\n"),
             '\r' => try w.writeAll("\\r"),
@@ -410,7 +416,8 @@ test "extrairTextoResposta: conteúdo bloqueado → erro" {
 
 test "extrairTextoResposta: candidates vazio → erro" {
     const alloc = std.testing.allocator;
-    const json = \\{"candidates":[]}
+    const json =
+        \\{"candidates":[]}
     ;
     const result = extrairTextoResposta(json, alloc);
     try std.testing.expectError(ErroGemini.RespostaVazia, result);

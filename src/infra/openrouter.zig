@@ -96,28 +96,30 @@ pub const OpenRouterAdapter = struct {
         var response = try req.receiveHead(&redirect_buf);
 
         if (response.head.status != .ok) {
-            var err_reader = response.reader(&.{});
+            var inner_err_buf: [8192]u8 = undefined;
+            var err_reader = response.reader(&inner_err_buf);
             var err_buf = std.ArrayListUnmanaged(u8){};
             defer err_buf.deinit(allocator);
-            var transfer_buffer: [8192]u8 = undefined;
+            var read_buf: [8192]u8 = undefined;
             while (true) {
-                const len = try err_reader.readSliceShort(&transfer_buffer);
+                const len = try err_reader.readSliceShort(&read_buf);
                 if (len == 0) break;
-                try err_buf.appendSlice(allocator, transfer_buffer[0..len]);
+                try err_buf.appendSlice(allocator, read_buf[0..len]);
             }
             std.log.err("OpenRouter API Error: Status {d} - {s}", .{ @intFromEnum(response.head.status), err_buf.items });
             return ErroOpenRouter.HttpError;
         }
 
-        var reader = response.reader(&.{});
+        var inner_buf: [8192]u8 = undefined;
+        var reader = response.reader(&inner_buf);
         var res_buf = std.ArrayListUnmanaged(u8){};
         defer res_buf.deinit(allocator);
 
-        var transfer_buffer: [8192]u8 = undefined;
+        var read_buf: [8192]u8 = undefined;
         while (true) {
-            const len = try reader.readSliceShort(&transfer_buffer);
+            const len = try reader.readSliceShort(&read_buf);
             if (len == 0) break;
-            try res_buf.appendSlice(allocator, transfer_buffer[0..len]);
+            try res_buf.appendSlice(allocator, read_buf[0..len]);
         }
 
         return extrairTextoResposta(res_buf.items, allocator);
