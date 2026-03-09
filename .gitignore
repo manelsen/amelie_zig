@@ -1,0 +1,30 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Build artifacts
+*.o
+*.a
+*.obj
+*.lib
+*.so
+*.dll
+main
+
+# Database
+amelie.db
+amelie.db-journal
+amelie.db-wal
+amelie.db-shm
+
+# Environment variables
+.env
+
+# Ide/Editor
+.vscode/
+.idea/
+
+# Agent caches
+.claude/
+.gemini/
+payload.json
