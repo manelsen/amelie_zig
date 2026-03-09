@@ -8,15 +8,22 @@ Amélie é uma agente autônoma de WhatsApp, reescrita do zero em **Zig** (0.15)
 - **Resiliência e Filas Offline**: Sistema transacional e de ACKs bidirecionais integrado com a [Whatsmeow Bridge]. Se o WhatsApp ou a API de IA caírem, as mensagens entram em fila com *backoff* exponencial no SQLite e são re-processadas quando o serviço voltar.
 - **Multimodalidade Pura**: Processamento nativo de Imagens, Áudio, Vídeo e Documentos (como PDFs) delegando o buffer base64 inteiramente à infraestrutura do LLM (Gemini Vision), sem consumir RAM da máquina local para parse.
 - **Leitura de Links (Scraping)**: O bot detecta URLs na mensagem, extrai o texto principal (removendo tags HTML) localmente e injeta como contexto para o LLM.
-- **Arquitetura TDD / Core Puro**: O domínio principal (`core` e `dominio`) não conhece bibliotecas HTTP ou de Banco de Dados. Toda lógica possui Inversão de Dependência via interfaces (`vtable` e duck-typing do Zig).
+- **Arquitetura Core Puro**: O domínio principal (`core` e `dominio`) não conhece bibliotecas HTTP ou de Banco de Dados. Toda lógica possui Inversão de Dependência via interfaces (`vtable` e duck-typing do Zig).
 
 ## 🛠 Pré-requisitos
 
-- [Zig](https://ziglang.org/) `0.15.x` ou superior.
-- `libsqlite3` (as dependências são compiladas a partir de `vendor/sqlite3`).
-- Uma chave de API do Gemini Studio e/ou OpenRouter.
+Você tem duas opções para rodar a Amélie: **Localmente (Bare-metal)** ou via **Docker**.
 
-## 🚀 Como Executar
+### Opção 1: Via Docker (Recomendado para Produção)
+Apenas o **Docker** e o **Docker Compose** são necessários. O Zig será baixado estruturalmente dentro do contêiner na fase de build (multi-stage), não poluindo sua máquina.
+
+```bash
+docker-compose up -d --build
+```
+
+### Opção 2: Localmente (Para Desenvolvimento)
+- [Zig](https://ziglang.org/) `0.15.x` ou superior.
+- Uma chave de API do Gemini Studio e/ou OpenRouter.
 
 Clone e configure as environment variables:
 
@@ -39,7 +46,7 @@ WHATSAPP_WEBHOOK_URL=http://localhost:8080
 
 Compile e execute:
 ```bash
-zig build run -Doptimize=ReleaseFast
+zig build run -Doptimize=ReleaseSmall
 ```
 
 ## 🧪 Rodando Testes
@@ -50,7 +57,7 @@ zig build test -Doptimize=Debug
 
 ## 📂 Arquitetura (Hexagonal)
 - **`src/dominio/`**: Regras de negócio, parser de comandos e structs puras.
-- **`src/core/`**: Processador de contexto e tomada de fluxo (Sinfonia).
+- **`src/core/`**: Processador de contexto e tomada de fluxo.
 - **`src/infra/`**: Adaptadores impuros, `sqlite.zig`, `http.zig`, `gemini.zig`, `openrouter.zig`, `scraper.zig`.
 - **`src/shell/`**: Filas assíncronas, gerenciamento de threads de I/O e handlers de barramento.
 
