@@ -1,0 +1,10 @@
+.{
+    .name = .amelie_zig,
+    .fingerprint = 0x7756994d28f27061,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor" },
+    .dependencies = .{
+        .sqlite3 = .{ .path = "vendor/sqlite3" },
+    },
+}
