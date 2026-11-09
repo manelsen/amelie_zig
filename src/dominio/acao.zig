@@ -58,17 +58,20 @@ pub const Acao = union(enum) {
         incluir_historico: bool        = true,
     };
 
+    /// Payload for a WhatsApp message reaction (emoji + target message id).
     pub const Reacao = struct {
         emoji:  []const u8,
         msg_id: []const u8,
     };
 
+    /// Carries the field name and string value to be persisted by the shell.
     pub const AlterarConfig = struct {
         campo: []const u8,
         valor: []const u8,
         // Sem feedback aqui — shell monta a mensagem de confirmação.
     };
 
+    /// Carries the name and content of a custom prompt to persist.
     pub const SalvarPrompt = struct {
         nome:     []const u8,
         conteudo: []const u8,

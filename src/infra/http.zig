@@ -1,9 +1,9 @@
 // infra/http.zig
-// Servidor HTTP/1.1 mínimo (Zig 0.15) + parsing do webhook Baileys → Mensagem.
+// Servidor HTTP/1.1 mínimo (Zig 0.15) + parsing do webhook Whatsmeow → Mensagem.
 //
 // Responsabilidades:
 //   - Aceitar conexões TCP, ler body do POST /webhook
-//   - Parsear JSON Baileys → Mensagem (domínio)
+//   - Parsear JSON Whatsmeow → Mensagem (domínio)
 //   - Chamar handler(Mensagem) → responder 200/400
 //
 // Fora do escopo aqui: autenticação, TLS, keep-alive.
@@ -18,15 +18,17 @@ pub const TipoMidia = msg_m.TipoMidia;
 pub const Comando   = cmd_m.Comando;
 
 // ---------------------------------------------------------------------------
-// Estrutura do payload Baileys (campo `message` é Value por ser polimórfico)
+// Estrutura do payload Whatsmeow (campo `message` é Value por ser polimórfico)
 // ---------------------------------------------------------------------------
 
+/// Minimal representation of the Whatsmeow webhook JSON. Unknown fields are ignored.
 const WebhookPayload = struct {
     key: Key,
     messageTimestamp: ?i64          = null,
     pushName:         ?[]const u8   = null,
     message:          ?std.json.Value = null,
 
+    /// Identifies the message origin. `participant` is set only for group messages.
     const Key = struct {
         remoteJid:   []const u8,
         fromMe:      bool,
@@ -49,7 +51,7 @@ pub const ErroWebhook = error{
 // parsearMensagem — puro exceto pelo alocador (std.json aloca internamente)
 // ---------------------------------------------------------------------------
 
-/// Converte JSON raw do Baileys → Mensagem de domínio.
+/// Converte JSON raw do Whatsmeow → Mensagem de domínio.
 /// Caller: chame `parsed.deinit()` para liberar memória do json.
 pub fn parsearMensagem(
     allocator: std.mem.Allocator,
@@ -90,6 +92,7 @@ pub fn parsearMensagem(
     };
 }
 
+/// Inspects the `message` object and returns the appropriate `Conteudo` variant.
 fn extrairConteudo(p: WebhookPayload) !Conteudo {
     const msg = p.message orelse return Conteudo{ .texto = "" };
     if (msg != .object) return Conteudo{ .texto = "" };
@@ -144,6 +147,7 @@ fn extrairConteudo(p: WebhookPayload) !Conteudo {
     return Conteudo{ .texto = "" };
 }
 
+/// Extracts URL, caption, MIME type, and file name from a media message object.
 fn midiaDeObj(v: std.json.Value, tipo: TipoMidia) Conteudo {
     var url:      []const u8  = "";
     var caption:  ?[]const u8 = null;
@@ -166,6 +170,7 @@ fn midiaDeObj(v: std.json.Value, tipo: TipoMidia) Conteudo {
     }};
 }
 
+/// Returns true when the trimmed text starts with `.` (the command prefix).
 fn eComando(texto: []const u8) bool {
     const t = std.mem.trim(u8, texto, " \t\n\r");
     return t.len > 0 and t[0] == '.';
@@ -182,7 +187,7 @@ const RequestData = struct {
 
 /// Estrutura agrupando todos os handlers do servidor.
 pub const Handlers = struct {
-    /// POST /webhook — mensagem individual Baileys
+    /// POST /webhook — mensagem individual Whatsmeow
     mensagem: *const fn (Mensagem, std.mem.Allocator) []const u8,
     /// POST /webhook/ack — confirmação de entrega
     ack:      *const fn ([]const u8, std.mem.Allocator) []const u8,
@@ -217,6 +222,7 @@ pub fn startServer(
     }
 }
 
+/// Reads one HTTP request, dispatches to the correct handler, and writes the response.
 fn handleConn(
     conn:      std.net.Server.Connection,
     handlers:  Handlers,
@@ -289,6 +295,7 @@ fn readBody(stream: std.net.Stream, buf: []u8) !RequestData {
     return error.IncompletaRequest;
 }
 
+/// Scans the raw header block for `Content-Length` and returns its integer value.
 fn contentLength(headers: []const u8) ?usize {
     var it = std.mem.splitSequence(u8, headers, "\r\n");
     while (it.next()) |line| {
@@ -300,6 +307,7 @@ fn contentLength(headers: []const u8) ?usize {
     return null;
 }
 
+/// Writes a minimal HTTP/1.1 response with `Content-Type: application/json`.
 fn writeResponse(stream: std.net.Stream, buf: []u8, status: u16, body: []const u8) !void {
     const text = try std.fmt.bufPrint(
         buf,
@@ -439,4 +447,52 @@ test "eComando: detecta ponto inicial" {
     try std.testing.expect(!eComando("texto normal"));
     try std.testing.expect(!eComando(""));
     try std.testing.expect(eComando("  .reset  ")); // trimmed
+}
+
+test "parsearMensagem: pushName é propagado para Mensagem" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"key":{"remoteJid":"5531@s.whatsapp.net","fromMe":false,"id":"pn1"},"pushName":"Maria","message":{"conversation":"oi"}}
+    ;
+    const r = try parsearMensagem(alloc, json);
+    defer r.parsed.deinit();
+
+    try std.testing.expect(r.msg.push_name != null);
+    try std.testing.expectEqualStrings("Maria", r.msg.push_name.?);
+}
+
+test "parsearMensagem: pushName ausente → null" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"key":{"remoteJid":"5531@s.whatsapp.net","fromMe":false,"id":"pn2"},"message":{"conversation":"oi"}}
+    ;
+    const r = try parsearMensagem(alloc, json);
+    defer r.parsed.deinit();
+
+    try std.testing.expectEqual(@as(?[]const u8, null), r.msg.push_name);
+}
+
+test "parsearMensagem: documentMessage com fileName propagado" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"key":{"remoteJid":"5531@s.whatsapp.net","fromMe":false,"id":"doc1"},"message":{"documentMessage":{"url":"https://x.com/file.pdf","mimetype":"application/pdf","fileName":"relatorio.pdf"}}}
+    ;
+    const r = try parsearMensagem(alloc, json);
+    defer r.parsed.deinit();
+
+    try std.testing.expect(r.msg.conteudo == .midia);
+    try std.testing.expectEqual(TipoMidia.documento, r.msg.conteudo.midia.tipo);
+    try std.testing.expectEqualStrings("application/pdf", r.msg.conteudo.midia.mimetype.?);
+    try std.testing.expectEqualStrings("relatorio.pdf", r.msg.conteudo.midia.filename.?);
+}
+
+test "parsearMensagem: documentMessage sem fileName → filename null" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"key":{"remoteJid":"5531@s.whatsapp.net","fromMe":false,"id":"doc2"},"message":{"documentMessage":{"url":"https://x.com/f.docx","mimetype":"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}}}
+    ;
+    const r = try parsearMensagem(alloc, json);
+    defer r.parsed.deinit();
+
+    try std.testing.expectEqual(@as(?[]const u8, null), r.msg.conteudo.midia.filename);
 }

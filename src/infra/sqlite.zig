@@ -3,7 +3,7 @@
 //
 // Tabelas:
 //   config   (chat_id, media_imagem, media_audio, media_video, media_documento,
-//             modo_descricao, usar_legenda, system_prompt, prompt_ativo)
+//             modo_descricao, usar_legenda, provider, system_prompt, prompt_ativo)
 //   prompts  (chat_id, nome, conteudo)      PRIMARY KEY (chat_id, nome)
 //   historico(id, chat_id, role, conteudo, timestamp)
 //   usuarios (jid, nome, eh_admin, primeiro_contato)
@@ -34,18 +34,21 @@ pub const ErroDb = error{
 // Entrada de histórico
 // ---------------------------------------------------------------------------
 
+/// A single conversation turn as stored in the `historico` table.
 pub const EntradaHistorico = struct {
     role: []const u8,
     conteudo: []const u8,
     timestamp: i64,
 };
 
+/// A user record from the `usuarios` table.
 pub const EntradaUsuario = struct {
     jid: []const u8,
     nome: []const u8,
     eh_admin: bool,
 };
 
+/// An outbound delivery record from the `transacoes` table.
 pub const Transacao = struct {
     id: []const u8,
     chat_id: []const u8,
@@ -77,6 +80,7 @@ pub const Db = struct {
         return open(":memory:", allocator);
     }
 
+    /// Closes the SQLite handle. Must be called exactly once.
     pub fn deinit(self: *Db) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -87,6 +91,7 @@ pub const Db = struct {
     // Esquema
     // -----------------------------------------------------------------------
 
+    /// Creates all tables and indexes if they do not exist, and applies pending migrations (e.g., adds `provider` column to legacy databases).
     pub fn criarEsquema(self: *Db) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -135,6 +140,40 @@ pub const Db = struct {
             \\);
         ;
         if (c.sqlite3_exec(self.handle, sql, null, null, null) != c.SQLITE_OK)
+            return ErroDb.EsquemaFalhou;
+
+        try self.migrarConfigProvider();
+    }
+
+    /// Adds the `provider` column to the `config` table if it is absent (migration from schema v1).
+    fn migrarConfigProvider(self: *Db) !void {
+        var stmt: ?*c.sqlite3_stmt = null;
+        defer {
+            if (stmt != null) _ = c.sqlite3_finalize(stmt);
+        }
+
+        const pragma = "PRAGMA table_info(config)";
+        if (c.sqlite3_prepare_v2(self.handle, pragma, -1, &stmt, null) != c.SQLITE_OK)
+            return ErroDb.PrepararFalhou;
+
+        var tem_provider = false;
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            if (std.mem.eql(u8, columnText(stmt, 1), "provider")) {
+                tem_provider = true;
+                break;
+            }
+        }
+
+        _ = c.sqlite3_finalize(stmt);
+        stmt = null;
+
+        if (tem_provider) return;
+
+        const alter_sql =
+            \\ALTER TABLE config
+            \\ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'
+        ;
+        if (c.sqlite3_exec(self.handle, alter_sql, null, null, null) != c.SQLITE_OK)
             return ErroDb.EsquemaFalhou;
     }
 
@@ -216,6 +255,7 @@ pub const Db = struct {
     // Prompts
     // -----------------------------------------------------------------------
 
+    /// Inserts or replaces a named prompt for a chat.
     pub fn salvarPrompt(
         self: *Db,
         chat_id: []const u8,
@@ -279,6 +319,7 @@ pub const Db = struct {
         return lista.toOwnedSlice(allocator);
     }
 
+    /// Deletes a named prompt for a chat. No-ops if the prompt does not exist.
     pub fn deletarPrompt(self: *Db, chat_id: []const u8, nome: []const u8) !void {
         const sql = "DELETE FROM prompts WHERE chat_id=? AND nome=?";
         var stmt: ?*c.sqlite3_stmt = null;
@@ -296,6 +337,7 @@ pub const Db = struct {
     // Histórico
     // -----------------------------------------------------------------------
 
+    /// Appends a conversation turn to the `historico` table with the current timestamp.
     pub fn adicionarHistorico(
         self: *Db,
         chat_id: []const u8,
@@ -356,6 +398,7 @@ pub const Db = struct {
         return lista.toOwnedSlice(allocator);
     }
 
+    /// Deletes all history entries for the given chat.
     pub fn limparHistorico(self: *Db, chat_id: []const u8) !void {
         try self.exec("DELETE FROM historico WHERE chat_id = ?", chat_id);
     }
@@ -364,6 +407,7 @@ pub const Db = struct {
     // Usuários
     // -----------------------------------------------------------------------
 
+    /// Inserts a user record with `INSERT OR IGNORE` — does not overwrite an existing entry.
     pub fn registrarUsuario(
         self: *Db,
         jid: []const u8,
@@ -406,6 +450,7 @@ pub const Db = struct {
         return lista.toOwnedSlice(allocator);
     }
 
+    /// Returns the total number of rows in the `usuarios` table.
     pub fn contarUsuarios(self: *Db) !i64 {
         const sql = "SELECT COUNT(*) FROM usuarios";
         var stmt: ?*c.sqlite3_stmt = null;
@@ -421,6 +466,7 @@ pub const Db = struct {
     // Transações (Acks)
     // -----------------------------------------------------------------------
 
+    /// Inserts a new outbound delivery record with status `pending`.
     pub fn registrarTransacao(
         self: *Db,
         id: []const u8,
@@ -449,6 +495,7 @@ pub const Db = struct {
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return ErroDb.ExecFalhou;
     }
 
+    /// Updates the status of a transaction by id. Logs a warning if the row is not found.
     pub fn atualizarTransacaoStatus(
         self: *Db,
         id: []const u8,
@@ -465,9 +512,19 @@ pub const Db = struct {
         bindText(stmt, 1, status);
         bindText(stmt, 2, id);
 
-        if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return ErroDb.ExecFalhou;
+        const rc = c.sqlite3_step(stmt);
+        if (rc != c.SQLITE_DONE) {
+            const msg = c.sqlite3_errmsg(self.handle);
+            const err_txt = if (msg != null) std.mem.span(msg) else "erro sqlite desconhecido";
+            std.log.err("Acks: falha UPDATE transacoes id={s} rc={d} err={s}", .{ id, rc, err_txt });
+            return ErroDb.ExecFalhou;
+        }
+
+        const changes = c.sqlite3_changes(self.handle);
+        std.log.info("Acks: UPDATE transacoes id={s} status={s} rows={d}", .{ id, status, changes });
     }
 
+    /// Returns all pending transactions whose `proxima_tentativa` is in the past and `tentativas < 3`, ordered by creation time.
     pub fn obterTransacoesPendentes(self: *Db, allocator: std.mem.Allocator) ![]Transacao {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -496,6 +553,7 @@ pub const Db = struct {
         return lista.toOwnedSlice(allocator);
     }
 
+    /// Increments the attempt counter and sets the next retry timestamp.
     pub fn registrarTentativa(self: *Db, id: []const u8, nova_proxima: i64) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -515,6 +573,7 @@ pub const Db = struct {
     // Helpers internos
     // -----------------------------------------------------------------------
 
+    /// Prepares and runs a single-parameter statement, returning `ExecFalhou` on error.
     fn exec(self: *Db, sql: [*:0]const u8, param: []const u8) !void {
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null) != c.SQLITE_OK)
@@ -529,14 +588,17 @@ pub const Db = struct {
 // Helpers C ↔ Zig
 // ---------------------------------------------------------------------------
 
+/// Binds a Zig string slice to a SQLite statement parameter using `SQLITE_STATIC`.
 fn bindText(stmt: ?*c.sqlite3_stmt, col: c_int, s: []const u8) void {
     _ = c.sqlite3_bind_text(stmt, col, s.ptr, @intCast(s.len), c.SQLITE_STATIC);
 }
 
+/// Binds a C integer to a SQLite statement parameter.
 fn bindInt(stmt: ?*c.sqlite3_stmt, col: c_int, v: c_int) void {
     _ = c.sqlite3_bind_int(stmt, col, v);
 }
 
+/// Reads a text column as a Zig slice pointing into SQLite's internal buffer. Valid only until the next `sqlite3_step` call.
 fn columnText(stmt: ?*c.sqlite3_stmt, col: c_int) []const u8 {
     const ptr = c.sqlite3_column_text(stmt, col);
     if (ptr == null) return "";
@@ -544,6 +606,7 @@ fn columnText(stmt: ?*c.sqlite3_stmt, col: c_int) []const u8 {
     return ptr[0..len];
 }
 
+/// Like `columnText` but returns `null` for SQL NULL values.
 fn columnTextOpt(stmt: ?*c.sqlite3_stmt, col: c_int) ?[]const u8 {
     const ptr = c.sqlite3_column_text(stmt, col);
     if (ptr == null) return null;
@@ -563,6 +626,41 @@ test "criarEsquema: sem erro" {
     try db.criarEsquema();
     // idempotente
     try db.criarEsquema();
+}
+
+test "criarEsquema: migra banco legado sem coluna provider" {
+    var db = try Db.openMemory(testing.allocator);
+    defer db.deinit();
+
+    const legacy_sql =
+        \\CREATE TABLE config (
+        \\  chat_id         TEXT PRIMARY KEY,
+        \\  media_imagem    INTEGER NOT NULL DEFAULT 1,
+        \\  media_audio     INTEGER NOT NULL DEFAULT 0,
+        \\  media_video     INTEGER NOT NULL DEFAULT 1,
+        \\  media_documento INTEGER NOT NULL DEFAULT 1,
+        \\  modo_descricao  TEXT    NOT NULL DEFAULT 'normal',
+        \\  usar_legenda    INTEGER NOT NULL DEFAULT 0,
+        \\  system_prompt   TEXT    NOT NULL DEFAULT '',
+        \\  prompt_ativo    TEXT
+        \\);
+    ;
+    try testing.expectEqual(@as(c_int, c.SQLITE_OK), c.sqlite3_exec(db.handle, legacy_sql, null, null, null));
+    try testing.expectEqual(@as(c_int, c.SQLITE_OK), c.sqlite3_exec(
+        db.handle,
+        "INSERT INTO config (chat_id, media_imagem, media_audio, media_video, media_documento, modo_descricao, usar_legenda, system_prompt, prompt_ativo) VALUES ('legacy', 1, 0, 1, 1, 'normal', 0, '', NULL)",
+        null,
+        null,
+        null,
+    ));
+
+    try db.criarEsquema();
+
+    const loaded = (try db.carregarConfig("legacy", testing.allocator)).?;
+    defer testing.allocator.free(loaded.system_prompt);
+    defer if (loaded.prompt_ativo) |pa| testing.allocator.free(pa);
+
+    try testing.expectEqual(Provider.gemini, loaded.provider);
 }
 
 test "config: salvar e carregar" {
@@ -779,4 +877,91 @@ test "usuarios: registrar e contar" {
     // INSERT OR IGNORE — não duplica
     try db.registrarUsuario("5531@s.whatsapp.net", "João Repetido", false);
     try testing.expectEqual(@as(i64, 2), try db.contarUsuarios());
+}
+
+test "usuarios: listarUsuarios retorna eh_admin correto" {
+    var db = try Db.openMemory(testing.allocator);
+    defer db.deinit();
+    try db.criarEsquema();
+
+    try db.registrarUsuario("user@s.whatsapp.net", "Usuário", false);
+    try db.registrarUsuario("admin@s.whatsapp.net", "Admin", true);
+
+    const lista = try db.listarUsuarios(testing.allocator);
+    defer {
+        for (lista) |u| {
+            testing.allocator.free(u.jid);
+            testing.allocator.free(u.nome);
+        }
+        testing.allocator.free(lista);
+    }
+
+    try testing.expectEqual(@as(usize, 2), lista.len);
+    // Ordered by primeiro_contato ASC → user registered first
+    try testing.expectEqualStrings("user@s.whatsapp.net", lista[0].jid);
+    try testing.expectEqual(false, lista[0].eh_admin);
+    try testing.expectEqualStrings("admin@s.whatsapp.net", lista[1].jid);
+    try testing.expectEqual(true, lista[1].eh_admin);
+}
+
+test "transacoes: ciclo completo registrar → obterPendentes → registrarTentativa → atualizarStatus" {
+    var db = try Db.openMemory(testing.allocator);
+    defer db.deinit();
+    try db.criarEsquema();
+
+    // Register a pending transaction
+    try db.registrarTransacao("tx-001", "chat1", "mensagem de teste", "pending");
+
+    // Fetch pending — should appear immediately (proxima_tentativa = now)
+    const pendentes = try db.obterTransacoesPendentes(testing.allocator);
+    defer {
+        for (pendentes) |t| {
+            testing.allocator.free(t.id);
+            testing.allocator.free(t.chat_id);
+            testing.allocator.free(t.conteudo);
+            testing.allocator.free(t.status);
+        }
+        testing.allocator.free(pendentes);
+    }
+
+    try testing.expectEqual(@as(usize, 1), pendentes.len);
+    try testing.expectEqualStrings("tx-001", pendentes[0].id);
+    try testing.expectEqualStrings("chat1", pendentes[0].chat_id);
+    try testing.expectEqualStrings("mensagem de teste", pendentes[0].conteudo);
+    try testing.expectEqual(@as(i64, 0), pendentes[0].tentativas);
+
+    // Record one attempt — push next retry far in the future
+    const futuro = std.time.timestamp() + 3600;
+    try db.registrarTentativa("tx-001", futuro);
+
+    // Now tentativas=1, proxima_tentativa is in the future → not returned
+    const pendentes2 = try db.obterTransacoesPendentes(testing.allocator);
+    defer testing.allocator.free(pendentes2);
+    try testing.expectEqual(@as(usize, 0), pendentes2.len);
+
+    // Mark as delivered
+    try db.atualizarTransacaoStatus("tx-001", "delivered");
+
+    // Regardless of proxima_tentativa, status != 'pending' → not returned
+    const pendentes3 = try db.obterTransacoesPendentes(testing.allocator);
+    defer testing.allocator.free(pendentes3);
+    try testing.expectEqual(@as(usize, 0), pendentes3.len);
+}
+
+test "transacoes: mais de 3 tentativas não aparece como pendente" {
+    var db = try Db.openMemory(testing.allocator);
+    defer db.deinit();
+    try db.criarEsquema();
+
+    try db.registrarTransacao("tx-002", "chat2", "retry overflow", "pending");
+
+    // Register 3 attempts with proxima_tentativa in the past (0 = epoch)
+    try db.registrarTentativa("tx-002", 0);
+    try db.registrarTentativa("tx-002", 0);
+    try db.registrarTentativa("tx-002", 0);
+
+    // tentativas = 3, condition is tentativas < 3 → not returned
+    const pendentes = try db.obterTransacoesPendentes(testing.allocator);
+    defer testing.allocator.free(pendentes);
+    try testing.expectEqual(@as(usize, 0), pendentes.len);
 }

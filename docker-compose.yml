@@ -1,0 +1,48 @@
+services:
+  amelie:
+    build: .
+    container_name: amelie_zig
+    restart: unless-stopped
+    ports:
+      - "3030:3000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DB_PATH=/data/amelie.db
+      - WHATSAPP_WEBHOOK_URL=http://whatsapp-bridge:8080/send
+    volumes:
+      - amelie_data:/data
+    networks:
+      - amelie_net
+
+  whatsapp-bridge:
+    build: ./whatsmeow-bridge
+    container_name: amelie_whatsmeow_bridge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - BRIDGE_PORT=8080
+      - AMELIE_URL=http://amelie:3000
+      - BRIDGE_DB_PATH=/app/db/whatsmeow.db
+      - MEDIA_DIR=/app/media_tmp
+      - MOBILE_NUMBER=${MOBILE_NUMBER}
+      # Esta URL é a externa (o IP/host da máquina host) onde a Amélie vai buscar as mídias.
+      # Se rodar na mesma máquina local (teste): usar http://localhost:8080
+      # Em prod: usar o IP/Domínio público da máquina.
+      - BRIDGE_URL=http://whatsapp-bridge:8080
+    volumes:
+      - whatsmeow_db:/app/db
+      - whatsmeow_media:/app/media_tmp
+    networks:
+      - amelie_net
+    depends_on:
+      - amelie
+
+volumes:
+  amelie_data:
+  whatsmeow_db:
+  whatsmeow_media:
+
+networks:
+  amelie_net:
+    driver: bridge

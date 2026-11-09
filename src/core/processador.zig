@@ -22,6 +22,8 @@ pub const Comando = cmd_mod.Comando;
 // ---------------------------------------------------------------------------
 // Texto de ajuda — constante de compilação, sem alocador.
 // ---------------------------------------------------------------------------
+
+/// Static help text returned by the `.ajuda` command. Compiled into the binary; requires no allocator.
 pub const TEXTO_AJUDA =
     "*Comandos disponíveis:*\n\n" ++
     "*.ajuda* — esta mensagem\n" ++
@@ -181,11 +183,11 @@ test "filtro: status@broadcast → ignorar" {
 
 // --- Mídia ---
 
-test "midia: audio com toggle desligado (default) → ignorar" {
+test "midia: audio com toggle desligado → ignorar" {
     const m = Mensagem{
         .conteudo = .{ .midia = .{ .tipo = .audio, .url = "http://x.com/a.ogg" } },
     };
-    const c = Config{ .media_audio = false }; // default
+    const c = Config{ .media_audio = false };
     try std.testing.expect(processar(m, c) == .ignorar);
 }
 
@@ -365,6 +367,72 @@ test "comando .config definir → alterar_config" {
     try std.testing.expect(a == .alterar_config);
     try std.testing.expectEqualStrings("temperature", a.alterar_config.campo);
     try std.testing.expectEqualStrings("0.7", a.alterar_config.valor);
+}
+
+test "comando .longo → alterar_config modo_descricao=longo" {
+    const m = Mensagem{ .conteudo = .{ .comando = .longo } };
+    const a = processar(m, .{});
+    try std.testing.expect(a == .alterar_config);
+    try std.testing.expectEqualStrings("modo_descricao", a.alterar_config.campo);
+    try std.testing.expectEqualStrings("longo", a.alterar_config.valor);
+}
+
+test "comando .legenda → alterar_config modo_descricao=legenda" {
+    const m = Mensagem{ .conteudo = .{ .comando = .legenda } };
+    const a = processar(m, .{});
+    try std.testing.expect(a == .alterar_config);
+    try std.testing.expectEqualStrings("legenda", a.alterar_config.valor);
+}
+
+test "comando .video: toggle off→on → alterar_config media_video=true" {
+    const m = Mensagem{ .conteudo = .{ .comando = .video } };
+    const c = Config{ .media_video = false };
+    const a = processar(m, c);
+    try std.testing.expectEqualStrings("media_video", a.alterar_config.campo);
+    try std.testing.expectEqualStrings("true", a.alterar_config.valor);
+}
+
+test "comando .video: toggle on→off → alterar_config media_video=false" {
+    const m = Mensagem{ .conteudo = .{ .comando = .video } };
+    const c = Config{ .media_video = true };
+    const a = processar(m, c);
+    try std.testing.expectEqualStrings("false", a.alterar_config.valor);
+}
+
+test "comando .doc: toggle off→on → alterar_config media_documento=true" {
+    const m = Mensagem{ .conteudo = .{ .comando = .doc } };
+    const c = Config{ .media_documento = false };
+    const a = processar(m, c);
+    try std.testing.expectEqualStrings("media_documento", a.alterar_config.campo);
+    try std.testing.expectEqualStrings("true", a.alterar_config.valor);
+}
+
+test "comando .desconhecido → ignorar" {
+    const m = Mensagem{ .conteudo = .{ .comando = .{ .desconhecido = ".xyzinexistente" } } };
+    try std.testing.expect(processar(m, .{}) == .ignorar);
+}
+
+test "midia: video com toggle desligado → ignorar" {
+    const m = Mensagem{
+        .conteudo = .{ .midia = .{ .tipo = .video, .url = "http://x.com/v.mp4" } },
+    };
+    const c = Config{ .media_video = false };
+    try std.testing.expect(processar(m, c) == .ignorar);
+}
+
+test "midia: documento com toggle ligado (default) → enfileirar_midia .documento" {
+    const m = Mensagem{
+        .conteudo = .{ .midia = .{ .tipo = .documento, .url = "http://x.com/f.pdf" } },
+    };
+    const a = processar(m, .{});
+    try std.testing.expect(a == .enfileirar_midia);
+    try std.testing.expectEqual(TipoMidia.documento, a.enfileirar_midia.tipo);
+}
+
+test "texto: invocar_ia.system_prompt é null (definido pelo handler)" {
+    const m = Mensagem{ .conteudo = .{ .texto = "pergunta qualquer" } };
+    const a = processar(m, .{});
+    try std.testing.expectEqual(@as(?[]const u8, null), a.invocar_ia.system_prompt);
 }
 
 test "comando .config obter → responder (shell busca valor)" {

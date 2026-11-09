@@ -14,7 +14,7 @@ const telemetria_m = @import("infra/telemetria.zig");
 const ResilienteGemini = @import("infra/resilience.zig").Resiliente(gemini.GeminiAdapter);
 const ResilienteOpenRouter = @import("infra/resilience.zig").Resiliente(openrouter.OpenRouterAdapter);
 
-var global_db: *sqlite.Db = undefined;
+var global_db: ?*sqlite.Db = null;
 var global_ia_gemini: ?*ResilienteGemini = null;
 var global_ia_openrouter: ?*ResilienteOpenRouter = null;
 var global_fila_gemini: ?*fila_midia.FilaMidia(ResilienteGemini) = null;
@@ -30,8 +30,8 @@ fn enviarWhatsApp(chat_id: []const u8, texto: []const u8) void {
     var msg_id_buf: [32]u8 = undefined;
     const msg_id = std.fmt.bufPrint(&msg_id_buf, "amelie-{d}", .{ts}) catch "amelie-0";
 
-    if (global_db != undefined) {
-        global_db.registrarTransacao(msg_id, chat_id, texto, "pending") catch {};
+    if (global_db) |db| {
+        db.registrarTransacao(msg_id, chat_id, texto, "pending") catch {};
     }
 
     enviarWhatsAppRaw(msg_id, chat_id, texto);
@@ -128,24 +128,24 @@ fn processarHttpMensagem(msg: http.Mensagem, alloc: std.mem.Allocator) []const u
 
     // Copia profunda no GPA global para sobreviver ao fim do request HTTP
     const msg_copy = msg_m.Mensagem{
-        .id        = global_allocator.dupe(u8, msg.id)        catch return "{}",
-        .chat_id   = global_allocator.dupe(u8, msg.chat_id)   catch return "{}",
+        .id = global_allocator.dupe(u8, msg.id) catch return "{}",
+        .chat_id = global_allocator.dupe(u8, msg.chat_id) catch return "{}",
         .remetente = global_allocator.dupe(u8, msg.remetente) catch return "{}",
         .push_name = if (msg.push_name) |n| global_allocator.dupe(u8, n) catch return "{}" else null,
-        .timestamp    = msg.timestamp,
-        .em_grupo     = msg.em_grupo,
+        .timestamp = msg.timestamp,
+        .em_grupo = msg.em_grupo,
         .menciona_bot = msg.menciona_bot,
-        .eh_admin     = msg.eh_admin,
+        .eh_admin = msg.eh_admin,
         .conteudo = switch (msg.conteudo) {
-            .texto   => |t| .{ .texto   = global_allocator.dupe(u8, t) catch return "{}" },
+            .texto => |t| .{ .texto = global_allocator.dupe(u8, t) catch return "{}" },
             .comando => |c| .{ .comando = c },
-            .midia   => |m| .{ .midia   = .{
-                .tipo     = m.tipo,
-                .url      = global_allocator.dupe(u8, m.url)      catch return "{}",
-                .caption  = if (m.caption)  |c| global_allocator.dupe(u8, c)  catch return "{}" else null,
+            .midia => |m| .{ .midia = .{
+                .tipo = m.tipo,
+                .url = global_allocator.dupe(u8, m.url) catch return "{}",
+                .caption = if (m.caption) |c| global_allocator.dupe(u8, c) catch return "{}" else null,
                 .mimetype = if (m.mimetype) |mt| global_allocator.dupe(u8, mt) catch return "{}" else null,
-                .filename = if (m.filename) |f| global_allocator.dupe(u8, f)  catch return "{}" else null,
-            }},
+                .filename = if (m.filename) |f| global_allocator.dupe(u8, f) catch return "{}" else null,
+            } },
         },
     };
 
@@ -172,7 +172,7 @@ fn asyncHandle(msg: msg_m.Mensagem) void {
             .texto => |t| global_allocator.free(t),
             .midia => |m| {
                 global_allocator.free(m.url);
-                if (m.caption)  |c| global_allocator.free(c);
+                if (m.caption) |c| global_allocator.free(c);
                 if (m.mimetype) |mt| global_allocator.free(mt);
                 if (m.filename) |f| global_allocator.free(f);
             },
@@ -181,10 +181,10 @@ fn asyncHandle(msg: msg_m.Mensagem) void {
     }
 
     var provider_is_openrouter = false;
-    if (global_db != undefined) {
+    if (global_db) |db| {
         var temp_arena = std.heap.ArenaAllocator.init(alloc);
         defer temp_arena.deinit();
-        if (global_db.carregarConfig(msg.chat_id, temp_arena.allocator()) catch null) |c| {
+        if (db.carregarConfig(msg.chat_id, temp_arena.allocator()) catch null) |c| {
             provider_is_openrouter = (c.provider == .openrouter);
         }
     }
@@ -202,37 +202,40 @@ fn asyncHandle(msg: msg_m.Mensagem) void {
 
 fn despacharMensagem(
     comptime IA: type,
-    ia:  *IA,
-    fm:  ?*fila_midia.FilaMidia(IA),
+    ia: *IA,
+    fm: ?*fila_midia.FilaMidia(IA),
     msg: msg_m.Mensagem,
     alloc: std.mem.Allocator,
 ) void {
     var ctx = handler.Contexto(IA){
-        .ia         = ia,
-        .config     = handler.Config{ .chat_id = msg.chat_id },
-        .chat_id    = msg.chat_id,
-        .allocator  = alloc,
-        .cfg_arena  = std.heap.ArenaAllocator.init(alloc),
-        .enviarFn   = enviarWhatsApp,
-        .reagirFn   = reagirWhatsApp,
-        .db         = global_db,
+        .ia = ia,
+        .config = handler.Config{ .chat_id = msg.chat_id },
+        .chat_id = msg.chat_id,
+        .allocator = alloc,
+        .cfg_arena = std.heap.ArenaAllocator.init(alloc),
+        .enviarFn = enviarWhatsApp,
+        .reagirFn = reagirWhatsApp,
+        .db = global_db,
         .fila_midia = fm,
-        .cache_ia   = global_cache_ia,
+        .cache_ia = global_cache_ia,
     };
     defer ctx.deinit();
 
     ctx.handleMensagem(msg) catch |err| {
         std.log.err("Erro ao processar mensagem ({s}): {}", .{ msg.chat_id, err });
-        reagirWhatsApp(msg.chat_id, msg.id, "❌");
+        switch (msg.conteudo) {
+            .midia => reagirWhatsApp(msg.chat_id, msg.id, "❌"),
+            else => enviarWhatsApp(msg.chat_id, "❌ Erro interno ao processar a mensagem."),
+        }
     };
 }
 
 fn processarHttpAck(body_raw: []const u8, alloc: std.mem.Allocator) []const u8 {
     _ = alloc;
-    if (global_db == undefined) return "{}";
+    const db = global_db orelse return "{}";
 
     const AckPayload = struct {
-        id:     ?[]const u8 = null,
+        id: ?[]const u8 = null,
         status: ?[]const u8 = null,
     };
 
@@ -243,10 +246,13 @@ fn processarHttpAck(body_raw: []const u8, alloc: std.mem.Allocator) []const u8 {
     const parsed = std.json.parseFromSlice(AckPayload, temp_alloc, body_raw, .{ .ignore_unknown_fields = true }) catch return "{}";
     defer parsed.deinit();
 
-    const id     = parsed.value.id     orelse return "{}";
+    const id = parsed.value.id orelse return "{}";
     const status = parsed.value.status orelse return "{}";
 
-    global_db.atualizarTransacaoStatus(id, status) catch {};
+    std.log.info("Acks: webhook recebido id={s} status={s}", .{ id, status });
+    db.atualizarTransacaoStatus(id, status) catch |err| {
+        std.log.err("Acks: falha ao atualizar id={s}: {}", .{ id, err });
+    };
     return "{\"status\":\"ok\"}";
 }
 
@@ -256,9 +262,9 @@ fn processarHttpGrupo(body_raw: []const u8, alloc: std.mem.Allocator) []const u8
     _ = alloc;
 
     const GrupoPayload = struct {
-        id:     ?[]const u8 = null,  // JID do grupo
-        action: ?[]const u8 = null,  // "add", "remove", etc.
-        bot:    ?bool       = null,  // o bot foi afetado?
+        id: ?[]const u8 = null, // JID do grupo
+        action: ?[]const u8 = null, // "add", "remove", etc.
+        bot: ?bool = null, // o bot foi afetado?
     };
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -269,7 +275,7 @@ fn processarHttpGrupo(body_raw: []const u8, alloc: std.mem.Allocator) []const u8
     defer parsed.deinit();
 
     const action = parsed.value.action orelse return "{}";
-    const bot    = parsed.value.bot    orelse false;
+    const bot = parsed.value.bot orelse false;
 
     // Auto-leave: bot foi adicionado a um grupo
     if (std.mem.eql(u8, action, "add") and bot) {
@@ -284,21 +290,21 @@ fn processarHttpGrupo(body_raw: []const u8, alloc: std.mem.Allocator) []const u8
 fn monitorarTransacoes() void {
     std.log.info("Acks: Iniciando thread de monitoramento offline...", .{});
     while (!global_encerrando.load(.acquire)) {
-        std.time.sleep(10 * std.time.ns_per_s);
-        if (global_db == undefined) continue;
+        std.Thread.sleep(10 * std.time.ns_per_s);
+        const db = global_db orelse continue;
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        if (global_db.obterTransacoesPendentes(alloc)) |pendentes| {
+        if (db.obterTransacoesPendentes(alloc)) |pendentes| {
             for (pendentes) |p| {
                 std.log.info("Acks: Reenviando transação pendente {s} (tentativa {d})...", .{ p.id, p.tentativas + 1 });
                 enviarWhatsAppRaw(p.id, p.chat_id, p.conteudo);
 
                 const factor: i64 = @as(i64, 1) << @intCast(p.tentativas);
                 const prox = std.time.timestamp() + (10 * factor);
-                global_db.registrarTentativa(p.id, prox) catch {};
+                db.registrarTentativa(p.id, prox) catch {};
             }
         } else |err| {
             std.log.err("Erro ao obter transações pendentes: {}", .{err});
@@ -311,7 +317,7 @@ fn monitorarTransacoes() void {
 // Signal handler (SIGINT / SIGTERM) para encerramento gracioso
 // ---------------------------------------------------------------------------
 
-fn handleSinal(_: c_int) callconv(.C) void {
+fn handleSinal(_: c_int) callconv(.c) void {
     global_encerrando.store(true, .release);
     std.log.info("Sinal recebido — encerrando Amélie...", .{});
 }
@@ -340,11 +346,11 @@ pub fn main() !void {
     // Instala handlers de sinal para encerramento gracioso
     const sigaction = std.posix.Sigaction{
         .handler = .{ .handler = handleSinal },
-        .mask    = std.posix.empty_sigset,
-        .flags   = 0,
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
     };
-    try std.posix.sigaction(std.posix.SIG.INT,  &sigaction, null);
-    try std.posix.sigaction(std.posix.SIG.TERM, &sigaction, null);
+    std.posix.sigaction(std.posix.SIG.INT, &sigaction, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &sigaction, null);
 
     // DB
     const db_path_z = try allocator.dupeZ(u8, cfg.db_path);
@@ -355,7 +361,7 @@ pub fn main() !void {
     global_db = &db;
 
     // Cache de IA
-    var cache_ia = cache_ia_m.CacheIA.init(allocator);
+    var cache_ia = cache_ia_m.CacheIA.init(allocator, .{});
     defer cache_ia.deinit();
     global_cache_ia = &cache_ia;
 
@@ -377,33 +383,29 @@ pub fn main() !void {
     // Provedores de IA
     var ia_gemini: ResilienteGemini = undefined;
     var ia_openrouter: ResilienteOpenRouter = undefined;
-    var fila_gemini: fila_midia.FilaMidia(ResilienteGemini) = undefined;
-    var fila_openrouter: fila_midia.FilaMidia(ResilienteOpenRouter) = undefined;
 
     if (cfg.gemini_api_key.len > 0) {
         std.log.info("I.A Engine: [Gemini] Registrado.", .{});
         const base_ia = gemini.GeminiAdapter{
-            .config    = .{ .api_key = cfg.gemini_api_key },
+            .config = .{ .api_key = cfg.gemini_api_key },
             .allocator = allocator,
         };
-        ia_gemini       = ResilienteGemini.init(base_ia, .{});
+        ia_gemini = ResilienteGemini.init(base_ia, .{});
         global_ia_gemini = &ia_gemini;
 
-        fila_gemini = try fila_midia.FilaMidia(ResilienteGemini).init(allocator, 4, &ia_gemini, enviarWhatsApp, reagirWhatsApp);
-        global_fila_gemini = &fila_gemini;
+        global_fila_gemini = try fila_midia.FilaMidia(ResilienteGemini).init(allocator, 4, &ia_gemini, enviarWhatsApp, reagirWhatsApp);
     }
 
     if (cfg.openrouter_api_key.len > 0) {
         std.log.info("I.A Engine: [OpenRouter] Registrado.", .{});
         const base_ia = openrouter.OpenRouterAdapter{
-            .config    = .{ .api_key = cfg.openrouter_api_key },
+            .config = .{ .api_key = cfg.openrouter_api_key },
             .allocator = allocator,
         };
-        ia_openrouter       = ResilienteOpenRouter.init(base_ia, .{});
+        ia_openrouter = ResilienteOpenRouter.init(base_ia, .{});
         global_ia_openrouter = &ia_openrouter;
 
-        fila_openrouter = try fila_midia.FilaMidia(ResilienteOpenRouter).init(allocator, 4, &ia_openrouter, enviarWhatsApp, reagirWhatsApp);
-        global_fila_openrouter = &fila_openrouter;
+        global_fila_openrouter = try fila_midia.FilaMidia(ResilienteOpenRouter).init(allocator, 4, &ia_openrouter, enviarWhatsApp, reagirWhatsApp);
     }
 
     if (global_ia_gemini == null and global_ia_openrouter == null) {
@@ -413,8 +415,8 @@ pub fn main() !void {
 
     try http.startServer(cfg.port, .{
         .mensagem = processarHttpMensagem,
-        .ack      = processarHttpAck,
-        .grupo    = processarHttpGrupo,
+        .ack = processarHttpAck,
+        .grupo = processarHttpGrupo,
     }, &global_encerrando, allocator);
 
     std.log.info("Amélie encerrada.", .{});

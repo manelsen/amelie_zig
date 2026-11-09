@@ -9,6 +9,7 @@ const std = @import("std");
 const cache_ia_m       = @import("cache_ia.zig");
 const cache_mens_m     = @import("cache_mensagens.zig");
 
+/// Configuration for the background telemetry thread.
 pub const TelemetriaConfig = struct {
     intervalo_s: u64 = 300, // 5 minutos (igual ao amelie/JS)
 };
@@ -21,6 +22,7 @@ pub const Telemetria = struct {
     cache_ia:        ?*cache_ia_m.CacheIA,
     cache_mensagens: ?*cache_mens_m.CacheMensagens,
 
+    /// Creates a `Telemetria` instance with optional references to the caches to be cleaned.
     pub fn init(
         config:          TelemetriaConfig,
         cache_ia:        ?*cache_ia_m.CacheIA,
@@ -36,21 +38,23 @@ pub const Telemetria = struct {
         };
     }
 
-    /// Inicia thread de telemetria. Caller deve chamar thread.detach() ou thread.join().
+    /// Spawns the background monitoring thread. The caller must call `.detach()` or `.join()` on the returned thread handle.
     pub fn iniciar(self: *Telemetria) !std.Thread {
         return std.Thread.spawn(.{}, monitorar, .{self});
     }
 
+    /// Signals the background thread to stop. The thread exits after its current sleep interval.
     pub fn parar(self: *Telemetria) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.encerrando = true;
     }
 
+    /// Main loop: sleeps for `intervalo_s`, logs stats, and cleans caches until `encerrando` is set.
     fn monitorar(self: *Telemetria) void {
         std.log.info("[Telemetria] Monitoramento iniciado (intervalo={d}s).", .{self.config.intervalo_s});
         while (true) {
-            std.time.sleep(self.config.intervalo_s * std.time.ns_per_s);
+            std.Thread.sleep(self.config.intervalo_s * std.time.ns_per_s);
 
             self.mutex.lock();
             const enc = self.encerrando;
@@ -63,6 +67,7 @@ pub const Telemetria = struct {
         std.log.info("[Telemetria] Monitoramento encerrado.", .{});
     }
 
+    /// Logs uptime, RSS, and current cache sizes at INFO level.
     fn registrarStats(self: *Telemetria) void {
         const uptime  = std.time.timestamp() - self.inicio;
         const rss_kb  = lerRssKb() orelse 0;
@@ -74,6 +79,7 @@ pub const Telemetria = struct {
         );
     }
 
+    /// Calls `limparExpirados` on `cache_ia` and `limpar` on `cache_mensagens` if set.
     fn limparCaches(self: *Telemetria) void {
         if (self.cache_ia)        |c| c.limparExpirados();
         if (self.cache_mensagens) |c| c.limpar();
@@ -85,6 +91,7 @@ pub const Telemetria = struct {
 // Retorna valor em KB ou null se indisponível.
 // ---------------------------------------------------------------------------
 
+/// Reads `VmRSS` from `/proc/self/status`. Returns `null` on non-Linux or read failure.
 fn lerRssKb() ?usize {
     var buf: [2048]u8 = undefined;
     const f = std.fs.openFileAbsolute("/proc/self/status", .{}) catch return null;

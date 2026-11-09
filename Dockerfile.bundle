@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────
+# Stage 1 — whatsmeow bridge (Go + CGO + musl)
+# go-sqlite3 embute o SQLite — sem sqlite-dev necessário
+# ─────────────────────────────────────────────────────────────
+FROM golang:alpine AS bridge-builder
+
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /bridge
+COPY whatsmeow-bridge/go.mod whatsmeow-bridge/go.sum ./
+RUN go mod download
+
+COPY whatsmeow-bridge/ .
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o bridge .
+
+# ─────────────────────────────────────────────────────────────
+# Stage 2 — Amélie Zig (ReleaseFast, alvo musl/alpine)
+# sqlite3.c amalgamation compilada direto no binário
+# ─────────────────────────────────────────────────────────────
+FROM alpine:3.21 AS zig-builder
+
+RUN apk add --no-cache zig musl-dev
+
+WORKDIR /app
+COPY . .
+RUN zig build -Doptimize=ReleaseFast
+
+# ─────────────────────────────────────────────────────────────
+# Stage 3 — Runtime mínimo (~30–35 MB total)
+# Sem runtime externo, sem sqlite-libs, sem Erlang, sem Node
+# ─────────────────────────────────────────────────────────────
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+
+COPY --from=bridge-builder /bridge/bridge             /app/bridge
+COPY --from=zig-builder    /app/zig-out/bin/amelie-zig /app/amelie-zig
+COPY entrypoint.sh         /app/entrypoint.sh
+
+RUN chmod +x /app/bridge /app/amelie-zig /app/entrypoint.sh && \
+    mkdir -p /data /app/db /app/media_tmp
+
+# ── Zig app ───────────────────────────────────────────────────
+ENV GEMINI_API_KEY=""
+ENV DB_PATH="/data/amelie.db"
+ENV PORT="3000"
+ENV HOST="0.0.0.0"
+# Bridge escuta em localhost:8080 — sem docker network
+ENV WHATSAPP_WEBHOOK_URL="http://localhost:8080/send"
+
+# ── whatsmeow bridge ──────────────────────────────────────────
+ENV BRIDGE_PORT="8080"
+ENV BRIDGE_DB_PATH="/app/db/whatsmeow.db"
+ENV MEDIA_DIR="/app/media_tmp"
+# Zig escuta em localhost:3000 — sem docker network
+ENV AMELIE_URL="http://localhost:3000/webhook"
+ENV BRIDGE_URL="http://localhost:8080"
+
+VOLUME ["/data", "/app/db", "/app/media_tmp"]
+EXPOSE 3000
+
+ENTRYPOINT ["/app/entrypoint.sh"]

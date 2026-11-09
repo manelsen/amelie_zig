@@ -10,6 +10,7 @@ pub const ModoDescricao = enum {
     legenda,
     cego,
 
+    /// Parses a mode string case-insensitively. Returns `.normal` for unrecognised values.
     pub fn fromStr(s: []const u8) ModoDescricao {
         if (std.ascii.eqlIgnoreCase(s, "curto")) return .curto;
         if (std.ascii.eqlIgnoreCase(s, "longo")) return .longo;
@@ -18,6 +19,7 @@ pub const ModoDescricao = enum {
         return .normal;
     }
 
+    /// Returns the canonical lowercase string representation.
     pub fn toStr(self: ModoDescricao) []const u8 {
         return switch (self) {
             .normal  => "normal",
@@ -33,11 +35,13 @@ pub const Provider = enum {
     gemini,
     openrouter,
 
+    /// Parses a provider string case-insensitively. Returns `.gemini` for unrecognised values.
     pub fn fromStr(s: []const u8) Provider {
         if (std.ascii.eqlIgnoreCase(s, "openrouter")) return .openrouter;
         return .gemini;
     }
 
+    /// Returns the canonical lowercase string representation.
     pub fn toStr(self: Provider) []const u8 {
         return switch (self) {
             .gemini => "gemini",
@@ -48,7 +52,7 @@ pub const Provider = enum {
 
 /// Configuração per-chat. Todos os campos têm defaults idiomáticos.
 /// Campos de mídia refletem os defaults do A-N:
-///   imagem=true, audio=false, video=true, documento=true.
+///   imagem=true, audio=true, video=true, documento=true.
 pub const Config = struct {
     chat_id:         []const u8    = "",
     temperature:     f64           = 0.9,
@@ -56,7 +60,7 @@ pub const Config = struct {
     top_p:           f64           = 0.95,
     max_tokens:      u32           = 1024,
     media_imagem:    bool          = true,
-    media_audio:     bool          = false,
+    media_audio:     bool          = true,
     media_video:     bool          = true,
     media_documento: bool          = true,
     modo_descricao:  ModoDescricao = .normal,
@@ -66,8 +70,7 @@ pub const Config = struct {
     system_prompt:   []const u8    = "",
 };
 
-/// Aplica uma alteração de configuração (campo/valor em string) ao Config.
-/// Usado pelo shell ao executar Acao.alterar_config.
+/// Applies a single string-keyed config change to `cfg` in place. Silently ignores unknown field names. Accepts `"true"`, `"1"`, or `"on"` as truthy values for boolean fields.
 pub fn aplicarAlteracao(cfg: *Config, alt: struct { campo: []const u8, valor: []const u8 }) void {
     const Field = enum {
         media_imagem,
@@ -132,9 +135,81 @@ test "ModoDescricao.toStr: roundtrip" {
 test "Config: defaults do A-N" {
     const c = Config{};
     try std.testing.expectEqual(true,  c.media_imagem);
-    try std.testing.expectEqual(false, c.media_audio);
+    try std.testing.expectEqual(true,  c.media_audio);
     try std.testing.expectEqual(true,  c.media_video);
     try std.testing.expectEqual(true,  c.media_documento);
     try std.testing.expectEqual(@as(f64, 0.9), c.temperature);
     try std.testing.expectEqual(@as(?[]const u8, null), c.prompt_ativo);
+}
+
+// ---------------------------------------------------------------------------
+// aplicarAlteracao — invariantes e bordas
+// ---------------------------------------------------------------------------
+
+test "aplicarAlteracao: media_audio aceita true/false/1/on" {
+    var c = Config{};
+
+    aplicarAlteracao(&c, .{ .campo = "media_audio", .valor = "true" });
+    try std.testing.expectEqual(true, c.media_audio);
+
+    aplicarAlteracao(&c, .{ .campo = "media_audio", .valor = "false" });
+    try std.testing.expectEqual(false, c.media_audio);
+
+    aplicarAlteracao(&c, .{ .campo = "media_audio", .valor = "1" });
+    try std.testing.expectEqual(true, c.media_audio);
+
+    aplicarAlteracao(&c, .{ .campo = "media_audio", .valor = "on" });
+    try std.testing.expectEqual(true, c.media_audio);
+}
+
+test "aplicarAlteracao: todos os campos de mídia" {
+    var c = Config{ .media_imagem = false, .media_video = false, .media_documento = false };
+
+    aplicarAlteracao(&c, .{ .campo = "media_imagem",    .valor = "true" });
+    aplicarAlteracao(&c, .{ .campo = "media_video",     .valor = "true" });
+    aplicarAlteracao(&c, .{ .campo = "media_documento", .valor = "true" });
+
+    try std.testing.expectEqual(true, c.media_imagem);
+    try std.testing.expectEqual(true, c.media_video);
+    try std.testing.expectEqual(true, c.media_documento);
+}
+
+test "aplicarAlteracao: modo_descricao → enum correto" {
+    var c = Config{};
+
+    aplicarAlteracao(&c, .{ .campo = "modo_descricao", .valor = "curto" });
+    try std.testing.expectEqual(ModoDescricao.curto, c.modo_descricao);
+
+    aplicarAlteracao(&c, .{ .campo = "modo_descricao", .valor = "longo" });
+    try std.testing.expectEqual(ModoDescricao.longo, c.modo_descricao);
+
+    aplicarAlteracao(&c, .{ .campo = "modo_descricao", .valor = "legenda" });
+    try std.testing.expectEqual(ModoDescricao.legenda, c.modo_descricao);
+
+    aplicarAlteracao(&c, .{ .campo = "modo_descricao", .valor = "cego" });
+    try std.testing.expectEqual(ModoDescricao.cego, c.modo_descricao);
+}
+
+test "aplicarAlteracao: provider=openrouter" {
+    var c = Config{};
+    aplicarAlteracao(&c, .{ .campo = "provider", .valor = "openrouter" });
+    try std.testing.expectEqual(Provider.openrouter, c.provider);
+
+    aplicarAlteracao(&c, .{ .campo = "provider", .valor = "gemini" });
+    try std.testing.expectEqual(Provider.gemini, c.provider);
+}
+
+test "aplicarAlteracao: campo desconhecido → NOP" {
+    var c = Config{ .media_audio = false };
+    aplicarAlteracao(&c, .{ .campo = "nao_existe", .valor = "true" });
+    // nada mudou
+    try std.testing.expectEqual(false, c.media_audio);
+    try std.testing.expectEqual(ModoDescricao.normal, c.modo_descricao);
+}
+
+test "Provider.fromStr/toStr: roundtrip para todos os valores" {
+    inline for (std.meta.fields(Provider)) |f| {
+        const p: Provider = @enumFromInt(f.value);
+        try std.testing.expectEqual(p, Provider.fromStr(p.toStr()));
+    }
 }

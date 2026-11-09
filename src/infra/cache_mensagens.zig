@@ -12,6 +12,7 @@ pub const CacheMensagens = struct {
     allocator: std.mem.Allocator,
     ttl_ms:    i64 = 15 * 60 * 1000, // 15 minutos
 
+    /// Creates a new deduplication cache with a 15-minute TTL.
     pub fn init(allocator: std.mem.Allocator) CacheMensagens {
         return .{
             .mapa      = std.AutoHashMap(u64, i64).init(allocator),
@@ -20,6 +21,7 @@ pub const CacheMensagens = struct {
         };
     }
 
+    /// Releases the underlying hash map.
     pub fn deinit(self: *CacheMensagens) void {
         self.mapa.deinit();
     }
@@ -41,7 +43,7 @@ pub const CacheMensagens = struct {
         return true;
     }
 
-    /// Remove entradas mais velhas que TTL. Chamado periodicamente pela Telemetria.
+    /// Removes all entries whose age exceeds the TTL. Called periodically by `Telemetria`.
     pub fn limpar(self: *CacheMensagens) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -60,6 +62,7 @@ pub const CacheMensagens = struct {
         for (a_remover.items) |k| _ = self.mapa.remove(k);
     }
 
+    /// Returns the current number of tracked message IDs.
     pub fn contagem(self: *CacheMensagens) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -103,8 +106,28 @@ test "CacheMensagens: limpar remove entradas expiradas" {
     defer c.deinit();
 
     _ = c.eNova("msg_exp");
-    std.time.sleep(1 * std.time.ns_per_ms);
+    std.Thread.sleep(1 * std.time.ns_per_ms);
     c.limpar();
 
     try testing.expectEqual(@as(usize, 0), c.contagem());
+}
+
+test "CacheMensagens: após TTL expirar, mensagem volta a ser nova" {
+    // ttl_ms=1: expira em 1ms
+    var c = CacheMensagens{ .mapa = std.AutoHashMap(u64, i64).init(testing.allocator), .mutex = .{}, .allocator = testing.allocator, .ttl_ms = 1 };
+    defer c.deinit();
+
+    try testing.expect(c.eNova("msg_expira")); // primeira vez: nova
+    std.Thread.sleep(5 * std.time.ns_per_ms); // espera > TTL
+    try testing.expect(c.eNova("msg_expira")); // TTL expirou → nova novamente
+}
+
+test "CacheMensagens: limpar preserva entradas dentro do TTL" {
+    var c = CacheMensagens.init(testing.allocator); // ttl_ms = 15 min
+    defer c.deinit();
+
+    _ = c.eNova("msg_fresca");
+    c.limpar(); // não deve remover (acabou de ser inserida)
+
+    try testing.expectEqual(@as(usize, 1), c.contagem());
 }

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 
+/// A key/value pair used in `.prompt set` and `.config set` sub-commands.
 pub const Entrada = struct {
     nome: []const u8,
     valor: []const u8,
@@ -44,6 +45,7 @@ pub const Comando = union(enum) {
         gerar: []const u8, // .prompt "texto livre" → Gemini gera
     };
 
+    /// Sub-commands for `.config`: get a field value or set it.
     pub const SubcmdConfig = union(enum) {
         obter: []const u8, // .config get campo
         definir: Entrada, // .config set campo valor

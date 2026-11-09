@@ -6,18 +6,24 @@ const std    = @import("std");
 const cmd    = @import("comando.zig");
 pub const Comando = cmd.Comando;
 
+/// Classifies the media type of an incoming WhatsApp message.
 pub const TipoMidia = enum { imagem, audio, video, documento };
 
+/// Discriminated payload of a received message.
 pub const Conteudo = union(enum) {
     texto:   []const u8,
     comando: Comando,
     midia:   Midia,
 
+    /// Metadata for a media message. All string slices point into the JSON parse arena — do not free individually.
     pub const Midia = struct {
         tipo:     TipoMidia,
         url:      []const u8,
+        /// Optional user-provided description accompanying the media.
         caption:  ?[]const u8 = null,
+        /// MIME type reported by the sender (e.g. "image/jpeg").
         mimetype: ?[]const u8 = null,
+        /// Original file name as reported by the sender, if present.
         filename: ?[]const u8 = null,
     };
 };
@@ -28,7 +34,7 @@ pub const Mensagem = struct {
     id:           []const u8  = "msg_test",
     chat_id:      []const u8  = "chat_test",
     remetente:    []const u8  = "remetente_test",
-    push_name:    ?[]const u8 = null,   // nome de exibição do remetente (Baileys)
+    push_name:    ?[]const u8 = null,   // nome de exibição do remetente (Whatsmeow)
     conteudo:     Conteudo    = .{ .texto = "" },
     timestamp:    i64         = 0,
     em_grupo:     bool        = false,

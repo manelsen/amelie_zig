@@ -1,0 +1,6 @@
+.git
+.zig-cache/
+zig-out/
+whatsmeow-bridge/
+amelie.db
+.env

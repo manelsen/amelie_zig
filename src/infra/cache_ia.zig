@@ -6,8 +6,9 @@
 
 const std = @import("std");
 
+/// Configuration for `CacheIA`. `ttl_ms` is the entry lifetime in milliseconds; `max_entries` caps the map size.
 pub const CacheConfig = struct {
-    ttl_s:       i64   = 3600,  // 1 hora
+    ttl_ms:      i64   = 3_600_000,  // 1 hora em ms
     max_entries: usize = 500,
 };
 
@@ -22,6 +23,7 @@ pub const CacheIA = struct {
     mutex:     std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
+    /// Creates a new empty cache with the given configuration.
     pub fn init(allocator: std.mem.Allocator, config: CacheConfig) CacheIA {
         return .{
             .mapa      = std.AutoHashMap(u64, Entrada).init(allocator),
@@ -31,6 +33,7 @@ pub const CacheIA = struct {
         };
     }
 
+    /// Frees all cached responses and the underlying map.
     pub fn deinit(self: *CacheIA) void {
         var it = self.mapa.valueIterator();
         while (it.next()) |v| {
@@ -52,8 +55,8 @@ pub const CacheIA = struct {
         const chave = hashChave(prompt, sp);
         const entrada = self.mapa.get(chave) orelse return null;
 
-        const agora = std.time.timestamp();
-        if (agora - entrada.timestamp > self.config.ttl_s) {
+        const agora = std.time.milliTimestamp();
+        if (agora - entrada.timestamp > self.config.ttl_ms) {
             self.allocator.free(entrada.resposta);
             _ = self.mapa.remove(chave);
             return null;
@@ -83,14 +86,14 @@ pub const CacheIA = struct {
             self.allocator.free(old_ptr.resposta);
             old_ptr.* = Entrada{
                 .resposta  = resp_dup,
-                .timestamp = std.time.timestamp(),
+                .timestamp = std.time.milliTimestamp(),
             };
             return;
         }
 
         self.mapa.put(chave, Entrada{
             .resposta  = resp_dup,
-            .timestamp = std.time.timestamp(),
+            .timestamp = std.time.milliTimestamp(),
         }) catch {
             self.allocator.free(resp_dup);
         };
@@ -101,14 +104,14 @@ pub const CacheIA = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const agora = std.time.timestamp();
+        const agora = std.time.milliTimestamp();
 
         var a_remover = std.ArrayListUnmanaged(u64){};
         defer a_remover.deinit(self.allocator);
 
         var it = self.mapa.iterator();
         while (it.next()) |entry| {
-            if (agora - entry.value_ptr.timestamp > self.config.ttl_s) {
+            if (agora - entry.value_ptr.timestamp > self.config.ttl_ms) {
                 a_remover.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
@@ -127,6 +130,7 @@ pub const CacheIA = struct {
 
     // --- privados ---
 
+    /// Wyhash over `prompt ++ "\x00" ++ system_prompt`. The null byte prevents prefix collisions.
     fn hashChave(prompt: []const u8, sp: ?[]const u8) u64 {
         var h = std.hash.Wyhash.init(0xABCDEF1234);
         h.update(prompt);
@@ -135,6 +139,7 @@ pub const CacheIA = struct {
         return h.final();
     }
 
+    /// Removes the entry with the oldest timestamp to make room for a new one.
     fn evictarMaisAntigo(self: *CacheIA) void {
         var oldest_key: ?u64  = null;
         var oldest_ts:  i64   = std.math.maxInt(i64);
@@ -211,7 +216,7 @@ test "CacheIA: evicta mais antigo quando cheio" {
     defer c.deinit();
 
     c.inserir("p1", null, "r1");
-    std.time.sleep(1 * std.time.ns_per_ms); // garante timestamps distintos
+    std.Thread.sleep(10 * std.time.ns_per_ms); // garante timestamps distintos em ms
     c.inserir("p2", null, "r2");
     c.inserir("p3", null, "r3"); // força evicção de p1
 
@@ -220,11 +225,11 @@ test "CacheIA: evicta mais antigo quando cheio" {
 }
 
 test "CacheIA: limparExpirados remove apenas expirados" {
-    var c = CacheIA.init(testing.allocator, .{ .ttl_s = 0 });
+    var c = CacheIA.init(testing.allocator, .{ .ttl_ms = 0 });
     defer c.deinit();
 
     c.inserir("p", null, "r");
-    std.time.sleep(2 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
     c.limparExpirados();
 
     try testing.expectEqual(@as(usize, 0), c.contagem());

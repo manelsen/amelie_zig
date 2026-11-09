@@ -6,6 +6,8 @@
 //
 
 const std = @import("std");
+const http_fetch = @import("http_fetch.zig");
+const json_util = @import("json_util.zig");
 
 pub const MODELO_PADRAO = "google/gemini-2.5-flash-lite"; // Example fallback model on OpenRouter
 pub const URL_BASE = "https://openrouter.ai/api/v1/chat/completions";
@@ -32,6 +34,7 @@ pub const OpenRouterAdapter = struct {
         return .{ .config = config, .allocator = allocator };
     }
 
+    /// Calls the OpenRouter chat completions endpoint with a text prompt and optional system prompt. Returns the assistant's reply, owned by the caller.
     pub fn gerarTexto(
         self: *OpenRouterAdapter,
         prompt: []const u8,
@@ -44,6 +47,7 @@ pub const OpenRouterAdapter = struct {
         return self.chamarAPI(body, allocator);
     }
 
+    /// Calls the OpenRouter vision endpoint with a base-64 media payload. PDF, DOCX, and CSV are rejected with a user-visible message.
     pub fn processarMidia(
         self: *OpenRouterAdapter,
         dados: []const u8,
@@ -62,10 +66,8 @@ pub const OpenRouterAdapter = struct {
         return self.chamarAPI(body, allocator);
     }
 
+    /// Sends `body` to the OpenRouter endpoint and extracts the response text.
     fn chamarAPI(self: *OpenRouterAdapter, body: []const u8, allocator: std.mem.Allocator) ![]const u8 {
-        var client = std.http.Client{ .allocator = allocator };
-        defer client.deinit();
-
         const uri = std.Uri.parse(URL_BASE) catch return ErroOpenRouter.UrlInvalida;
 
         var auth_header = std.ArrayListUnmanaged(u8){};
@@ -77,55 +79,26 @@ pub const OpenRouterAdapter = struct {
         const title_hdr = std.http.Header{ .name = "X-Title", .value = "Amelie (Zig)" };
         const auth_hdr = std.http.Header{ .name = "Authorization", .value = auth_header.items };
 
-        var req = try client.request(.POST, uri, .{
+        const result = try http_fetch.fetch(allocator, .{ .uri = uri }, .{
+            .method = .POST,
+            .payload = body,
             .headers = .{
                 .content_type = .{ .override = "application/json" },
             },
             .extra_headers = &.{ auth_hdr, referer_hdr, title_hdr },
         });
-        defer req.deinit();
+        defer allocator.free(result.body);
 
-        req.transfer_encoding = .{ .content_length = body.len };
-
-        var payload_stream = try req.sendBodyUnflushed(&.{});
-        try payload_stream.writer.writeAll(body);
-        try payload_stream.end();
-        try req.connection.?.flush();
-
-        var redirect_buf: [8192]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buf);
-
-        if (response.head.status != .ok) {
-            var inner_err_buf: [8192]u8 = undefined;
-            var err_reader = response.reader(&inner_err_buf);
-            var err_buf = std.ArrayListUnmanaged(u8){};
-            defer err_buf.deinit(allocator);
-            var read_buf: [8192]u8 = undefined;
-            while (true) {
-                const len = try err_reader.readSliceShort(&read_buf);
-                if (len == 0) break;
-                try err_buf.appendSlice(allocator, read_buf[0..len]);
-            }
-            std.log.err("OpenRouter API Error: Status {d} - {s}", .{ @intFromEnum(response.head.status), err_buf.items });
+        if (result.status != .ok) {
+            std.log.err("OpenRouter API Error: Status {d} - {s}", .{ @intFromEnum(result.status), result.body });
             return ErroOpenRouter.HttpError;
         }
 
-        var inner_buf: [8192]u8 = undefined;
-        var reader = response.reader(&inner_buf);
-        var res_buf = std.ArrayListUnmanaged(u8){};
-        defer res_buf.deinit(allocator);
-
-        var read_buf: [8192]u8 = undefined;
-        while (true) {
-            const len = try reader.readSliceShort(&read_buf);
-            if (len == 0) break;
-            try res_buf.appendSlice(allocator, read_buf[0..len]);
-        }
-
-        return extrairTextoResposta(res_buf.items, allocator);
+        return extrairTextoResposta(result.body, allocator);
     }
 };
 
+/// Builds an OpenAI-compatible chat completions JSON request body for text-only input.
 fn montarBodyTexto(
     cfg: OpenRouterConfig,
     prompt: []const u8,
@@ -136,23 +109,24 @@ fn montarBodyTexto(
     const w = buf.writer(allocator);
 
     try w.print("{{\"model\":", .{});
-    try escreverStringJson(w, cfg.modelo);
+    try json_util.escreverStringJson(w, cfg.modelo);
 
     try w.print(",\"temperature\":{d},\"messages\":[", .{cfg.temperature});
 
     if (system_prompt) |sp| {
         try w.writeAll("{\"role\":\"system\",\"content\":");
-        try escreverStringJson(w, sp);
+        try json_util.escreverStringJson(w, sp);
         try w.writeAll("},");
     }
 
     try w.writeAll("{\"role\":\"user\",\"content\":");
-    try escreverStringJson(w, prompt);
+    try json_util.escreverStringJson(w, prompt);
     try w.writeAll("}]}");
 
     return buf.toOwnedSlice(allocator);
 }
 
+/// Builds an OpenAI-compatible chat completions JSON request body with a `image_url` vision part.
 fn montarBodyMidia(
     cfg: OpenRouterConfig,
     dados: []const u8,
@@ -164,14 +138,14 @@ fn montarBodyMidia(
     const w = buf.writer(allocator);
 
     try w.print("{{\"model\":", .{});
-    try escreverStringJson(w, cfg.modelo);
+    try json_util.escreverStringJson(w, cfg.modelo);
 
     try w.print(",\"temperature\":{d},\"messages\":[", .{cfg.temperature});
 
     try w.writeAll("{\"role\":\"user\",\"content\":[");
 
     try w.writeAll("{\"type\":\"text\",\"text\":");
-    try escreverStringJson(w, prompt);
+    try json_util.escreverStringJson(w, prompt);
     try w.writeAll("},");
 
     try w.writeAll("{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
@@ -185,6 +159,7 @@ fn montarBodyMidia(
     return buf.toOwnedSlice(allocator);
 }
 
+/// Navigates `choices[0].message.content` in the OpenAI-compatible response JSON.
 fn extrairTextoResposta(json_raw: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_raw, .{ .ignore_unknown_fields = true }) catch return ErroOpenRouter.JsonMalformado;
     defer parsed.deinit();
@@ -201,40 +176,15 @@ fn extrairTextoResposta(json_raw: []const u8, allocator: std.mem.Allocator) ![]c
 
     if (content != .string) return ErroOpenRouter.RespostaVazia;
 
-    return allocator.dupe(u8, limparResposta(content.string));
+    return allocator.dupe(u8, json_util.limparResposta(content.string));
 }
 
-fn limparResposta(texto: []const u8) []const u8 {
-    var t = std.mem.trim(u8, texto, " \t\n\r");
-    inline for (.{ "amélie:", "amelie:", "Amélie:", "Amelie:" }) |prefix| {
-        if (std.mem.startsWith(u8, t, prefix)) {
-            t = std.mem.trim(u8, t[prefix.len..], " ");
-            break;
-        }
-    }
-    return t;
-}
-
+/// Returns a sensible default prompt string for a given MIME type.
 fn promptPadraoPorMime(mimetype: []const u8) []const u8 {
     if (std.mem.startsWith(u8, mimetype, "image/")) return "Descreva esta imagem.";
     if (std.mem.startsWith(u8, mimetype, "audio/")) return "Transcreva este áudio.";
     if (std.mem.startsWith(u8, mimetype, "video/")) return "Descreva este vídeo.";
     return "Analise este documento.";
-}
-
-fn escreverStringJson(w: anytype, s: []const u8) !void {
-    try w.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\r' => try w.writeAll("\\r"),
-            '\t' => try w.writeAll("\\t"),
-            else => try w.writeByte(c),
-        }
-    }
-    try w.writeByte('"');
 }
 
 // ---------------------------------------------------------------------------
@@ -263,4 +213,75 @@ test "montarBodyMidia: openrouter vision" {
     try std.testing.expect(std.mem.indexOf(u8, body, "vision-model") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "image_url") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "data:image/jpeg;base64,base64data==") != null);
+}
+
+// ---------------------------------------------------------------------------
+// montarBodyTexto — JSON válido e sem system prompt
+// ---------------------------------------------------------------------------
+
+test "montarBodyTexto: sem system prompt" {
+    const alloc = std.testing.allocator;
+    const cfg = OpenRouterConfig{ .api_key = "x" };
+    const body = try montarBodyTexto(cfg, "mensagem", null, alloc);
+    defer alloc.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "system") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "mensagem") != null);
+    // Deve ser JSON válido
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+}
+
+test "montarBodyTexto: produz JSON válido com caracteres especiais" {
+    const alloc = std.testing.allocator;
+    const cfg = OpenRouterConfig{ .api_key = "x" };
+    const body = try montarBodyTexto(cfg, "texto com \"aspas\" e\nnewline", "role: \"system\"", alloc);
+    defer alloc.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+}
+
+// ---------------------------------------------------------------------------
+// extrairTextoResposta — invariantes (formato OpenAI chat completions)
+// ---------------------------------------------------------------------------
+
+test "extrairTextoResposta: payload OpenRouter válido → texto correto" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"choices":[{"message":{"role":"assistant","content":"Olá, posso ajudar?"}}]}
+    ;
+    const texto = try extrairTextoResposta(json, alloc);
+    defer alloc.free(texto);
+    try std.testing.expectEqualStrings("Olá, posso ajudar?", texto);
+}
+
+test "extrairTextoResposta: remove prefixo amélie: da resposta" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"choices":[{"message":{"role":"assistant","content":"amelie: Resultado"}}]}
+    ;
+    const texto = try extrairTextoResposta(json, alloc);
+    defer alloc.free(texto);
+    try std.testing.expectEqualStrings("Resultado", texto);
+}
+
+test "extrairTextoResposta: choices vazio → RespostaVazia" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"choices":[]}
+    ;
+    try std.testing.expectError(ErroOpenRouter.RespostaVazia, extrairTextoResposta(json, alloc));
+}
+
+test "extrairTextoResposta: sem campo choices → RespostaVazia" {
+    const alloc = std.testing.allocator;
+    const json =
+        \\{"model":"gpt-4","id":"abc"}
+    ;
+    try std.testing.expectError(ErroOpenRouter.RespostaVazia, extrairTextoResposta(json, alloc));
+}
+
+test "extrairTextoResposta: JSON malformado → JsonMalformado" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(ErroOpenRouter.JsonMalformado, extrairTextoResposta("{bad", alloc));
 }

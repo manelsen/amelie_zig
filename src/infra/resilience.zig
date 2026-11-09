@@ -54,6 +54,7 @@ pub const Semaphore = struct {
         self.cond.signal();
     }
 
+    /// Returns the current number of acquired slots.
     pub fn ocupados(self: *Semaphore) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -74,6 +75,7 @@ pub const CircuitBreaker = struct {
     ultimo_falha: i64             = 0,  // timestamp ms
     mutex:        std.Thread.Mutex = .{},
 
+    /// Returns true when the circuit is open and calls should be rejected. Automatically transitions from open to half-open when `timeout_cb_ms` has elapsed.
     pub fn aberto(self: *CircuitBreaker) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -92,6 +94,7 @@ pub const CircuitBreaker = struct {
         };
     }
 
+    /// Records a failure. Opens the circuit when the failure count reaches `limiar_falhas`.
     pub fn registrarFalha(self: *CircuitBreaker) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -103,6 +106,7 @@ pub const CircuitBreaker = struct {
         }
     }
 
+    /// Resets the failure count and closes the circuit.
     pub fn registrarSucesso(self: *CircuitBreaker) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -153,6 +157,7 @@ pub fn Resiliente(comptime T: type) type {
                     self.cb.registrarSucesso();
                     return ok;
                 } else |err| {
+                    if (erroEhPermanente(err)) return err;
                     self.cb.registrarFalha();
                     t += 1;
                     if (t >= self.config.max_retries) return err;
@@ -178,6 +183,7 @@ pub fn Resiliente(comptime T: type) type {
                     self.cb.registrarSucesso();
                     return ok;
                 } else |err| {
+                    if (erroEhPermanente(err)) return err;
                     self.cb.registrarFalha();
                     t += 1;
                     if (t >= self.config.max_retries) return err;
@@ -186,10 +192,21 @@ pub fn Resiliente(comptime T: type) type {
             }
         }
 
-        // Calcula backoff exponencial em nanosegundos (sem jitter por ora).
+        /// Computes exponential backoff: `base_ms * 2^(tentativa-1)` nanoseconds, capped at 2^10.
         fn backoffNs(base_ms: u64, tentativa: u8) u64 {
             const exp: u6 = @intCast(@min(tentativa - 1, 10)); // cap em 2^10
             return (base_ms * (@as(u64, 1) << exp)) * std.time.ns_per_ms;
+        }
+
+        /// Returns true for errors that should not be retried (content blocked, unsupported media, bad argument).
+        fn erroEhPermanente(err: anyerror) bool {
+            return switch (err) {
+                error.ConteudoBloqueado,
+                error.MidiaNaoSuportada,
+                error.ArgumentoInvalido,
+                => true,
+                else => false,
+            };
         }
     };
 }
@@ -366,4 +383,21 @@ test "processarMidia: retry funciona igual a gerarTexto" {
     const resp = try r.processarMidia("bytes", "image/jpeg", null, std.testing.allocator);
     try std.testing.expectEqualStrings("desc", resp);
     try std.testing.expectEqual(@as(u8, 2), r.inner.chamadas);
+}
+
+test "erros permanentes nao fazem retry nem abrem circuito" {
+    const mock = MockIA{
+        .falhas_restantes = 1,
+        .resposta = "nunca",
+        .erro_emitido = error.MidiaNaoSuportada,
+    };
+    var r = ResilienteMock.init(mock, .{
+        .max_retries = 5,
+        .backoff_inicial_ms = 0,
+    });
+
+    try std.testing.expectError(error.MidiaNaoSuportada, r.processarMidia("bytes", "application/pdf", null, std.testing.allocator));
+    try std.testing.expectEqual(@as(u8, 1), r.inner.chamadas);
+    try std.testing.expectEqual(@as(u8, 0), r.cb.falhas);
+    try std.testing.expectEqual(EstadoCircuito.fechado, r.cb.estado);
 }

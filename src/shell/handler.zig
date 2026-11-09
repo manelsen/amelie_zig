@@ -12,20 +12,20 @@
 //   allocator  — alocações temporárias de request (histórico, formatação).
 //                Liberadas antes de executarAcao retornar.
 
-const std       = @import("std");
-const proc      = @import("../core/processador.zig");
-const acao_m    = @import("../dominio/acao.zig");
-const msg_m     = @import("../dominio/mensagem.zig");
-const cfg_m     = @import("../dominio/config.zig");
-const sqlite    = @import("../infra/sqlite.zig");
-const fila      = @import("fila_midia.zig");
-const scraper   = @import("../infra/scraper.zig");
+const std = @import("std");
+const proc = @import("../core/processador.zig");
+const acao_m = @import("../dominio/acao.zig");
+const msg_m = @import("../dominio/mensagem.zig");
+const cfg_m = @import("../dominio/config.zig");
+const sqlite = @import("../infra/sqlite.zig");
+const fila = @import("fila_midia.zig");
+const scraper = @import("../infra/scraper.zig");
 const cache_ia_m = @import("../infra/cache_ia.zig");
 
 pub const Mensagem = msg_m.Mensagem;
-pub const Acao     = acao_m.Acao;
-pub const Config   = cfg_m.Config;
-pub const Db       = sqlite.Db;
+pub const Acao = acao_m.Acao;
+pub const Config = cfg_m.Config;
+pub const Db = sqlite.Db;
 
 // ---------------------------------------------------------------------------
 // Contexto(IA) — shell completo para um chat
@@ -37,18 +37,19 @@ pub const Db       = sqlite.Db;
 //
 // enviarFn: injetado para desacoplar do transporte (WhatsApp, testes, etc.).
 
+/// Returns a comptime-specialised shell context for an IA adapter type. The IA type must expose `gerarTexto` and `processarMidia` by duck-typing.
 pub fn Contexto(comptime IA: type) type {
     return struct {
-        ia:        *IA,
-        config:    Config,
-        chat_id:   []const u8,
+        ia: *IA,
+        config: Config,
+        chat_id: []const u8,
         allocator: std.mem.Allocator,
         cfg_arena: std.heap.ArenaAllocator,
-        enviarFn:  *const fn ([]const u8, []const u8) void,
-        reagirFn:  *const fn ([]const u8, []const u8, []const u8) void,
-        db:        ?*Db = null,
+        enviarFn: *const fn ([]const u8, []const u8) void,
+        reagirFn: *const fn ([]const u8, []const u8, []const u8) void,
+        db: ?*Db = null,
         fila_midia: ?*fila.FilaMidia(IA) = null,
-        cache_ia:  ?*cache_ia_m.CacheIA = null,
+        cache_ia: ?*cache_ia_m.CacheIA = null,
 
         const Self = @This();
 
@@ -74,7 +75,7 @@ pub fn Contexto(comptime IA: type) type {
                 else
                     Config{ .chat_id = self.chat_id };
 
-                // Registra/atualiza usuário com pushName (nome de exibição do Baileys)
+                // Registra/atualiza usuário com pushName (nome de exibição do Whatsmeow)
                 if (msg.push_name) |nome| {
                     db.registrarUsuario(msg.remetente, nome, msg.eh_admin) catch |err| {
                         std.log.warn("Falha ao registrar usuário {s}: {}", .{ msg.remetente, err });
@@ -90,6 +91,7 @@ pub fn Contexto(comptime IA: type) type {
         // executarAcao — efeitos colaterais
         // -----------------------------------------------------------------------
 
+        /// Executes the side effects prescribed by `ac`: DB writes, IA calls, and outbound messages.
         pub fn executarAcao(self: *Self, ac: Acao, msg_id: []const u8) !void {
             switch (ac) {
                 .ignorar => {},
@@ -120,7 +122,9 @@ pub fn Contexto(comptime IA: type) type {
                     cfg_m.aplicarAlteracao(&self.config, .{ .campo = alt.campo, .valor = alt.valor });
                     try self.salvarConfigAtual();
                     const ok = try std.fmt.allocPrint(
-                        self.allocator, "✅ {s} = {s}", .{ alt.campo, alt.valor },
+                        self.allocator,
+                        "✅ {s} = {s}",
+                        .{ alt.campo, alt.valor },
                     );
                     defer self.allocator.free(ok);
                     self.enviarFn(self.chat_id, ok);
@@ -143,7 +147,9 @@ pub fn Contexto(comptime IA: type) type {
                     if (self.db) |db| {
                         try db.salvarPrompt(self.chat_id, sp.nome, sp.conteudo);
                         const ok = try std.fmt.allocPrint(
-                            self.allocator, "✅ Prompt '{s}' salvo.", .{sp.nome},
+                            self.allocator,
+                            "✅ Prompt '{s}' salvo.",
+                            .{sp.nome},
                         );
                         defer self.allocator.free(ok);
                         self.enviarFn(self.chat_id, ok);
@@ -156,16 +162,20 @@ pub fn Contexto(comptime IA: type) type {
                     if (self.db) |db| {
                         if (try db.obterPrompt(self.chat_id, nome, self.cfgAlloc())) |conteudo| {
                             self.config.system_prompt = conteudo;
-                            self.config.prompt_ativo  = try self.cfgAlloc().dupe(u8, nome);
+                            self.config.prompt_ativo = try self.cfgAlloc().dupe(u8, nome);
                             try self.salvarConfigAtual();
                             const ok = try std.fmt.allocPrint(
-                                self.allocator, "✅ Prompt '{s}' ativado.", .{nome},
+                                self.allocator,
+                                "✅ Prompt '{s}' ativado.",
+                                .{nome},
                             );
                             defer self.allocator.free(ok);
                             self.enviarFn(self.chat_id, ok);
                         } else {
                             const err = try std.fmt.allocPrint(
-                                self.allocator, "❌ Prompt '{s}' não encontrado.", .{nome},
+                                self.allocator,
+                                "❌ Prompt '{s}' não encontrado.",
+                                .{nome},
                             );
                             defer self.allocator.free(err);
                             self.enviarFn(self.chat_id, err);
@@ -179,7 +189,9 @@ pub fn Contexto(comptime IA: type) type {
                     if (self.db) |db| {
                         try db.deletarPrompt(self.chat_id, nome);
                         const ok = try std.fmt.allocPrint(
-                            self.allocator, "✅ Prompt '{s}' deletado.", .{nome},
+                            self.allocator,
+                            "✅ Prompt '{s}' deletado.",
+                            .{nome},
                         );
                         defer self.allocator.free(ok);
                         self.enviarFn(self.chat_id, ok);
@@ -190,7 +202,7 @@ pub fn Contexto(comptime IA: type) type {
 
                 .limpar_prompt_ativo => {
                     self.config.system_prompt = "";
-                    self.config.prompt_ativo  = null;
+                    self.config.prompt_ativo = null;
                     try self.salvarConfigAtual();
                     self.enviarFn(self.chat_id, "✅ Prompt ativo removido.");
                 },
@@ -234,12 +246,14 @@ pub fn Contexto(comptime IA: type) type {
                             var buf = std.ArrayListUnmanaged(u8){};
                             defer buf.deinit(self.allocator);
                             try buf.writer(self.allocator).print(
-                                "👥 Usuários ({d}):\n", .{lista.len},
+                                "👥 Usuários ({d}):\n",
+                                .{lista.len},
                             );
                             for (lista) |u| {
                                 const tag = if (u.eh_admin) " (admin)" else "";
                                 try buf.writer(self.allocator).print(
-                                    "• {s}{s}\n", .{ u.nome, tag },
+                                    "• {s}{s}\n",
+                                    .{ u.nome, tag },
                                 );
                             }
                             self.enviarFn(self.chat_id, buf.items);
@@ -270,13 +284,13 @@ pub fn Contexto(comptime IA: type) type {
         // Helpers privados
         // -----------------------------------------------------------------------
 
+        /// Calls the IA, manages the cache, and sends the reply. Enriches the prompt with URL content when a link is detected.
         fn executarInvocarIA(self: *Self, inv: Acao.InvocarIA, msg_id: []const u8) !void {
-            self.reagirFn(self.chat_id, msg_id, "⏳");
+            _ = msg_id;
 
             // System prompt: override do Acao > config do chat > null
             const sp: ?[]const u8 = inv.system_prompt orelse
-                if (self.config.system_prompt.len > 0) self.config.system_prompt
-                else null;
+                if (self.config.system_prompt.len > 0) self.config.system_prompt else null;
 
             // Enriquecer o prompt se houver URL
             const prompt_enriquecido = try self.extrairEAnexarUrls(inv.prompt);
@@ -287,7 +301,6 @@ pub fn Contexto(comptime IA: type) type {
                 if (!inv.incluir_historico) {
                     if (cache.obter(prompt_enriquecido, sp, self.allocator)) |cached| {
                         defer self.allocator.free(cached);
-                        self.reagirFn(self.chat_id, msg_id, "🆗");
                         self.enviarFn(self.chat_id, cached);
                         return;
                     }
@@ -306,7 +319,7 @@ pub fn Contexto(comptime IA: type) type {
 
             // Persiste turno no histórico (salva o prompt_enriquecido original sem histórico global)
             if (self.db) |db| {
-                try db.adicionarHistorico(self.chat_id, "user",  prompt_enriquecido);
+                try db.adicionarHistorico(self.chat_id, "user", prompt_enriquecido);
                 try db.adicionarHistorico(self.chat_id, "model", resp);
             }
 
@@ -317,22 +330,13 @@ pub fn Contexto(comptime IA: type) type {
                 }
             }
 
-            self.reagirFn(self.chat_id, msg_id, "🆗");
             self.enviarFn(self.chat_id, resp);
         }
 
+        /// Detects the first HTTP/HTTPS URL in the prompt and appends scraped page text. Returns the original prompt unchanged when no URL is found.
         fn extrairEAnexarUrls(self: *Self, prompt_original: []const u8) ![]const u8 {
-            const url_start = std.mem.indexOf(u8, prompt_original, "http://") orelse
-                            std.mem.indexOf(u8, prompt_original, "https://");
-            if (url_start == null) return self.allocator.dupe(u8, prompt_original);
-
-            const idx = url_start.?;
-            var url_end = idx;
-            while (url_end < prompt_original.len) : (url_end += 1) {
-                const c = prompt_original[url_end];
-                if (c == ' ' or c == '\n' or c == '\r' or c == '\t' or c == '\"' or c == '\'') break;
-            }
-            const url = prompt_original[idx..url_end];
+            const url = primeiraUrl(prompt_original) orelse
+                return self.allocator.dupe(u8, prompt_original);
 
             var buf = std.ArrayListUnmanaged(u8){};
             defer buf.deinit(self.allocator);
@@ -385,21 +389,22 @@ pub fn Contexto(comptime IA: type) type {
             try db.salvarConfig(self.config);
         }
 
+        /// Formats a human-readable status summary of the current chat configuration.
         fn montarStatus(self: *Self) ![]const u8 {
             const prompt_ativo = self.config.prompt_ativo orelse "(nenhum)";
             return std.fmt.allocPrint(
                 self.allocator,
                 "🤖 Amélie ativa\n" ++
-                "• imagem: {s}\n" ++
-                "• áudio: {s}\n" ++
-                "• vídeo: {s}\n" ++
-                "• doc: {s}\n" ++
-                "• modo: {s}\n" ++
-                "• prompt: {s}",
+                    "• imagem: {s}\n" ++
+                    "• áudio: {s}\n" ++
+                    "• vídeo: {s}\n" ++
+                    "• doc: {s}\n" ++
+                    "• modo: {s}\n" ++
+                    "• prompt: {s}",
                 .{
-                    if (self.config.media_imagem)    "on" else "off",
-                    if (self.config.media_audio)     "on" else "off",
-                    if (self.config.media_video)     "on" else "off",
+                    if (self.config.media_imagem) "on" else "off",
+                    if (self.config.media_audio) "on" else "off",
+                    if (self.config.media_video) "on" else "off",
                     if (self.config.media_documento) "on" else "off",
                     self.config.modo_descricao.toStr(),
                     prompt_ativo,
@@ -407,6 +412,25 @@ pub fn Contexto(comptime IA: type) type {
             );
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers de módulo
+// ---------------------------------------------------------------------------
+
+/// Returns the first HTTP/HTTPS URL found in `texto`, or null when none is present.
+/// The returned slice points into `texto` — no allocation.
+fn primeiraUrl(texto: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, texto, "http://") orelse
+        std.mem.indexOf(u8, texto, "https://") orelse return null;
+    var end = start;
+    while (end < texto.len) : (end += 1) {
+        switch (texto[end]) {
+            ' ', '\n', '\r', '\t', '"', '\'' => break,
+            else => {},
+        }
+    }
+    return texto[start..end];
 }
 
 // ---------------------------------------------------------------------------
@@ -418,17 +442,17 @@ const testing = std.testing;
 /// MockIA captura o último prompt recebido (para testes de histórico).
 /// Usa buffer fixo para evitar use-after-free quando o handler libera prompt_final.
 const MockIA = struct {
-    resposta:     []const u8 = "resposta mock",
-    chamadas:     usize      = 0,
-    deve_falhar:  bool       = false,
-    _pbuf:        [8192]u8   = undefined,
+    resposta: []const u8 = "resposta mock",
+    chamadas: usize = 0,
+    deve_falhar: bool = false,
+    _pbuf: [8192]u8 = undefined,
     ultimo_prompt: []const u8 = "",
 
     pub fn gerarTexto(
-        self:   *MockIA,
+        self: *MockIA,
         prompt: []const u8,
-        _sp:    ?[]const u8,
-        alloc:  std.mem.Allocator,
+        _sp: ?[]const u8,
+        alloc: std.mem.Allocator,
     ) ![]const u8 {
         _ = _sp;
         self.chamadas += 1;
@@ -440,13 +464,15 @@ const MockIA = struct {
     }
 
     pub fn processarMidia(
-        self:   *MockIA,
+        self: *MockIA,
         _dados: []const u8,
-        _mime:  []const u8,
-        _p:     ?[]const u8,
-        alloc:  std.mem.Allocator,
+        _mime: []const u8,
+        _p: ?[]const u8,
+        alloc: std.mem.Allocator,
     ) ![]const u8 {
-        _ = _dados; _ = _mime; _ = _p;
+        _ = _dados;
+        _ = _mime;
+        _ = _p;
         self.chamadas += 1;
         return alloc.dupe(u8, self.resposta);
     }
@@ -457,40 +483,42 @@ const CtxMock = Contexto(MockIA);
 /// Captura mensagens enviadas em testes.
 /// Copia para buffer próprio — safe mesmo após o handler liberar o slice original.
 const Captura = struct {
-    chat_id:  []const u8 = "",
-    texto:    []const u8 = "",
-    msg_id:   []const u8 = "",
-    emoji:    []const u8 = "",
-    chamadas: usize      = 0,
-    _tbuf:    [8192]u8   = undefined,
-    _cbuf:    [256]u8    = undefined,
-    _mbuf:    [256]u8    = undefined,
-    _ebuf:    [64]u8     = undefined,
+    chat_id: []const u8 = "",
+    texto: []const u8 = "",
+    msg_id: []const u8 = "",
+    emoji: []const u8 = "",
+    chamadas: usize = 0,
+    _tbuf: [8192]u8 = undefined,
+    _cbuf: [256]u8 = undefined,
+    _mbuf: [256]u8 = undefined,
+    _ebuf: [64]u8 = undefined,
 
     var instancia: Captura = .{};
 
-    fn reset() void { instancia = .{}; }
+    fn reset() void {
+        instancia = .{};
+    }
 
     fn enviar(chat_id: []const u8, texto: []const u8) void {
-        const tl = @min(texto.len,   instancia._tbuf.len);
+        const tl = @min(texto.len, instancia._tbuf.len);
         const cl = @min(chat_id.len, instancia._cbuf.len);
         @memcpy(instancia._tbuf[0..tl], texto[0..tl]);
         @memcpy(instancia._cbuf[0..cl], chat_id[0..cl]);
-        instancia.texto    = instancia._tbuf[0..tl];
-        instancia.chat_id  = instancia._cbuf[0..cl];
+        instancia.texto = instancia._tbuf[0..tl];
+        instancia.chat_id = instancia._cbuf[0..cl];
         instancia.chamadas += 1;
     }
 
     fn reagir(chat_id: []const u8, msg_id: []const u8, emoji: []const u8) void {
         const cl = @min(chat_id.len, instancia._cbuf.len);
-        const ml = @min(msg_id.len,  instancia._mbuf.len);
-        const el = @min(emoji.len,   instancia._ebuf.len);
+        const ml = @min(msg_id.len, instancia._mbuf.len);
+        const el = @min(emoji.len, instancia._ebuf.len);
         @memcpy(instancia._cbuf[0..cl], chat_id[0..cl]);
         @memcpy(instancia._mbuf[0..ml], msg_id[0..ml]);
         @memcpy(instancia._ebuf[0..el], emoji[0..el]);
         instancia.chat_id = instancia._cbuf[0..cl];
-        instancia.msg_id  = instancia._mbuf[0..ml];
-        instancia.emoji   = instancia._ebuf[0..el];
+        instancia.msg_id = instancia._mbuf[0..ml];
+        instancia.emoji = instancia._ebuf[0..el];
         instancia.chamadas += 1;
     }
 };
@@ -498,13 +526,13 @@ const Captura = struct {
 fn novoCtx(ia: *MockIA, config: Config) CtxMock {
     Captura.reset();
     return .{
-        .ia        = ia,
-        .config    = config,
-        .chat_id   = "test_chat",
+        .ia = ia,
+        .config = config,
+        .chat_id = "test_chat",
         .allocator = testing.allocator,
         .cfg_arena = std.heap.ArenaAllocator.init(testing.allocator),
-        .enviarFn  = Captura.enviar,
-        .reagirFn  = Captura.reagir,
+        .enviarFn = Captura.enviar,
+        .reagirFn = Captura.reagir,
     };
 }
 
@@ -513,7 +541,7 @@ fn novoCtx(ia: *MockIA, config: Config) CtxMock {
 // ---------------------------------------------------------------------------
 
 test "ignorar: sem envio" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.executarAcao(.ignorar, "test_id");
@@ -521,7 +549,7 @@ test "ignorar: sem envio" {
 }
 
 test "responder: envia texto direto" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.executarAcao(.{ .responder = "Olá!" }, "test_id");
@@ -529,16 +557,17 @@ test "responder: envia texto direto" {
 }
 
 test "invocar_ia: chama IA e envia resposta" {
-    var ia  = MockIA{ .resposta = "resposta da IA" };
+    var ia = MockIA{ .resposta = "resposta da IA" };
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.executarAcao(.{ .invocar_ia = .{ .prompt = "oi" } }, "test_id");
     try testing.expectEqual(@as(usize, 1), ia.chamadas);
+    try testing.expectEqualStrings("", Captura.instancia.emoji);
     try testing.expectEqualStrings("resposta da IA", Captura.instancia.texto);
 }
 
 test "invocar_ia: usa system_prompt do config" {
-    var ia  = MockIA{ .resposta = "ok" };
+    var ia = MockIA{ .resposta = "ok" };
     var ctx = novoCtx(&ia, Config{ .system_prompt = "Seja breve." });
     defer ctx.deinit();
     try ctx.executarAcao(.{ .invocar_ia = .{ .prompt = "resuma" } }, "test_id");
@@ -546,24 +575,23 @@ test "invocar_ia: usa system_prompt do config" {
 }
 
 test "invocar_ia: falha → propaga erro" {
-    var ia  = MockIA{ .deve_falhar = true };
+    var ia = MockIA{ .deve_falhar = true };
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
-    try testing.expectError(error.ApiError,
-        ctx.executarAcao(.{ .invocar_ia = .{ .prompt = "x" } }, "test_id"));
+    try testing.expectError(error.ApiError, ctx.executarAcao(.{ .invocar_ia = .{ .prompt = "x" } }, "test_id"));
 }
 
 test "resetar_config: restaura defaults em memória" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, Config{ .media_audio = true });
     defer ctx.deinit();
     try ctx.executarAcao(.resetar_config, "test_id");
-    try testing.expectEqual(false, ctx.config.media_audio);
+    try testing.expectEqual(true, ctx.config.media_audio);
     try testing.expectEqualStrings("✅ Configuração resetada.", Captura.instancia.texto);
 }
 
 test "ativar_modo_cego: muda config e confirma" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.executarAcao(.ativar_modo_cego, "test_id");
@@ -572,7 +600,7 @@ test "ativar_modo_cego: muda config e confirma" {
 }
 
 test "limpar_prompt_ativo: zera system_prompt" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, Config{ .system_prompt = "Algum prompt." });
     defer ctx.deinit();
     try ctx.executarAcao(.limpar_prompt_ativo, "test_id");
@@ -581,8 +609,8 @@ test "limpar_prompt_ativo: zera system_prompt" {
 }
 
 test "obter_status: inclui campos de config" {
-    var ia  = MockIA{};
-    var ctx = novoCtx(&ia, Config{ .media_imagem = true, .media_audio = false });
+    var ia = MockIA{};
+    var ctx = novoCtx(&ia, Config{ .media_imagem = true, .media_audio = true });
     defer ctx.deinit();
     try ctx.executarAcao(.obter_status, "test_id");
     const t = Captura.instancia.texto;
@@ -592,19 +620,21 @@ test "obter_status: inclui campos de config" {
 }
 
 test "handleMensagem: texto → IA chamada" {
-    var ia  = MockIA{ .resposta = "Olá!" };
+    var ia = MockIA{ .resposta = "Olá!" };
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.handleMensagem(Mensagem{ .conteudo = .{ .texto = "oi" } });
     try testing.expectEqual(@as(usize, 1), ia.chamadas);
+    try testing.expectEqualStrings("", Captura.instancia.emoji);
+    try testing.expectEqualStrings("Olá!", Captura.instancia.texto);
 }
 
 test "handleMensagem: status@broadcast → ignorar" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.handleMensagem(Mensagem{
-        .chat_id  = "status@broadcast",
+        .chat_id = "status@broadcast",
         .conteudo = .{ .texto = "x" },
     });
     try testing.expectEqual(@as(usize, 0), ia.chamadas);
@@ -612,13 +642,13 @@ test "handleMensagem: status@broadcast → ignorar" {
 }
 
 test "handleMensagem: grupo sem menção → ignorar" {
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtx(&ia, .{});
     defer ctx.deinit();
     try ctx.handleMensagem(Mensagem{
-        .em_grupo     = true,
+        .em_grupo = true,
         .menciona_bot = false,
-        .conteudo     = .{ .texto = "oi grupo" },
+        .conteudo = .{ .texto = "oi grupo" },
     });
     try testing.expectEqual(@as(usize, 0), ia.chamadas);
 }
@@ -639,7 +669,7 @@ test "invocar_ia+DB: salva histórico (user + model)" {
     defer db.deinit();
     try db.criarEsquema();
 
-    var ia  = MockIA{ .resposta = "Olá!" };
+    var ia = MockIA{ .resposta = "Olá!" };
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -647,31 +677,34 @@ test "invocar_ia+DB: salva histórico (user + model)" {
 
     const hist = try db.obterHistorico("test_chat", 10, testing.allocator);
     defer {
-        for (hist) |e| { testing.allocator.free(e.role); testing.allocator.free(e.conteudo); }
+        for (hist) |e| {
+            testing.allocator.free(e.role);
+            testing.allocator.free(e.conteudo);
+        }
         testing.allocator.free(hist);
     }
     try testing.expectEqual(@as(usize, 2), hist.len);
-    try testing.expectEqualStrings("user",  hist[0].role);
-    try testing.expectEqualStrings("oi",    hist[0].conteudo);
+    try testing.expectEqualStrings("user", hist[0].role);
+    try testing.expectEqualStrings("oi", hist[0].conteudo);
     try testing.expectEqualStrings("model", hist[1].role);
-    try testing.expectEqualStrings("Olá!",  hist[1].conteudo);
+    try testing.expectEqualStrings("Olá!", hist[1].conteudo);
 }
 
 test "invocar_ia+DB: enriquece prompt com histórico" {
     var db = try Db.openMemory(testing.allocator);
     defer db.deinit();
     try db.criarEsquema();
-    try db.adicionarHistorico("test_chat", "user",  "mensagem anterior");
+    try db.adicionarHistorico("test_chat", "user", "mensagem anterior");
     try db.adicionarHistorico("test_chat", "model", "resposta anterior");
 
-    var ia  = MockIA{ .resposta = "ok" };
+    var ia = MockIA{ .resposta = "ok" };
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.{ .invocar_ia = .{ .prompt = "nova pergunta" } }, "test_id");
 
     try testing.expect(std.mem.indexOf(u8, ia.ultimo_prompt, "mensagem anterior") != null);
-    try testing.expect(std.mem.indexOf(u8, ia.ultimo_prompt, "nova pergunta")     != null);
+    try testing.expect(std.mem.indexOf(u8, ia.ultimo_prompt, "nova pergunta") != null);
 }
 
 test "invocar_ia+DB: incluir_historico=false pula histórico" {
@@ -680,14 +713,14 @@ test "invocar_ia+DB: incluir_historico=false pula histórico" {
     try db.criarEsquema();
     try db.adicionarHistorico("test_chat", "user", "contexto antigo");
 
-    var ia  = MockIA{ .resposta = "ok" };
+    var ia = MockIA{ .resposta = "ok" };
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.{ .invocar_ia = .{
-        .prompt            = "pergunta direta",
+        .prompt = "pergunta direta",
         .incluir_historico = false,
-    }}, "test_id");
+    } }, "test_id");
 
     // Prompt enviado à IA não deve conter o histórico
     try testing.expect(std.mem.indexOf(u8, ia.ultimo_prompt, "contexto antigo") == null);
@@ -699,13 +732,14 @@ test "alterar_config+DB: persiste no banco" {
     defer db.deinit();
     try db.criarEsquema();
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.{ .alterar_config = .{
-        .campo = "media_audio", .valor = "true",
-    }}, "test_id");
+        .campo = "media_audio",
+        .valor = "true",
+    } }, "test_id");
 
     const cfg = (try db.carregarConfig("test_chat", testing.allocator)).?;
     defer testing.allocator.free(cfg.system_prompt);
@@ -719,13 +753,13 @@ test "resetar_config+DB: apaga registro e reseta memória" {
     try db.criarEsquema();
     try db.salvarConfig(Config{ .chat_id = "test_chat", .media_audio = true });
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, Config{ .media_audio = true }, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.resetar_config, "test_id");
 
-    try testing.expectEqual(false, ctx.config.media_audio);
+    try testing.expectEqual(true, ctx.config.media_audio);
     const r = try db.carregarConfig("test_chat", testing.allocator);
     try testing.expectEqual(@as(?Config, null), r);
 }
@@ -735,14 +769,14 @@ test "salvar_prompt+DB: persiste e confirma" {
     defer db.deinit();
     try db.criarEsquema();
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.{ .salvar_prompt = .{
-        .nome     = "resumo",
+        .nome = "resumo",
         .conteudo = "Resuma em 3 pontos.",
-    }}, "test_id");
+    } }, "test_id");
 
     const c = (try db.obterPrompt("test_chat", "resumo", testing.allocator)).?;
     defer testing.allocator.free(c);
@@ -756,7 +790,7 @@ test "ativar_prompt+DB: carrega conteúdo e seta system_prompt" {
     try db.criarEsquema();
     try db.salvarPrompt("test_chat", "educado", "Seja educado e objetivo.");
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -772,7 +806,7 @@ test "ativar_prompt+DB: nome inexistente → mensagem de erro" {
     defer db.deinit();
     try db.criarEsquema();
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -787,7 +821,7 @@ test "deletar_prompt+DB: remove do banco" {
     try db.criarEsquema();
     try db.salvarPrompt("test_chat", "tmp", "conteúdo");
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -802,9 +836,9 @@ test "listar_prompts+DB: formata lista corretamente" {
     defer db.deinit();
     try db.criarEsquema();
     try db.salvarPrompt("test_chat", "alpha", "...");
-    try db.salvarPrompt("test_chat", "beta",  "...");
+    try db.salvarPrompt("test_chat", "beta", "...");
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -812,7 +846,7 @@ test "listar_prompts+DB: formata lista corretamente" {
 
     const t = Captura.instancia.texto;
     try testing.expect(std.mem.indexOf(u8, t, "alpha") != null);
-    try testing.expect(std.mem.indexOf(u8, t, "beta")  != null);
+    try testing.expect(std.mem.indexOf(u8, t, "beta") != null);
 }
 
 test "listar_prompts+DB: chat sem prompts → mensagem vazia" {
@@ -820,7 +854,7 @@ test "listar_prompts+DB: chat sem prompts → mensagem vazia" {
     defer db.deinit();
     try db.criarEsquema();
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
@@ -832,19 +866,111 @@ test "listar_usuarios+DB: formata lista com admins" {
     var db = try Db.openMemory(testing.allocator);
     defer db.deinit();
     try db.criarEsquema();
-    try db.registrarUsuario("5531@s.whatsapp.net", "João",  false);
+    try db.registrarUsuario("5531@s.whatsapp.net", "João", false);
     try db.registrarUsuario("5532@s.whatsapp.net", "Maria", true);
 
-    var ia  = MockIA{};
+    var ia = MockIA{};
     var ctx = novoCtxComDb(&ia, .{}, &db);
     defer ctx.deinit();
 
     try ctx.executarAcao(.listar_usuarios, "test_id");
 
     const t = Captura.instancia.texto;
-    try testing.expect(std.mem.indexOf(u8, t, "João")   != null);
-    try testing.expect(std.mem.indexOf(u8, t, "Maria")  != null);
-    try testing.expect(std.mem.indexOf(u8, t, "admin")  != null);
+    try testing.expect(std.mem.indexOf(u8, t, "João") != null);
+    try testing.expect(std.mem.indexOf(u8, t, "Maria") != null);
+    try testing.expect(std.mem.indexOf(u8, t, "admin") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Testes de cache de IA no handler
+// ---------------------------------------------------------------------------
+
+test "invocar_ia+cache: hit → IA não é chamada, retorna do cache" {
+    var ia = MockIA{ .resposta = "da IA (não deveria aparecer)" };
+    var ctx = novoCtx(&ia, .{});
+    defer ctx.deinit();
+
+    var cache = cache_ia_m.CacheIA.init(testing.allocator, .{});
+    defer cache.deinit();
+    cache.inserir("pergunta cacheada", null, "resposta do cache");
+    ctx.cache_ia = &cache;
+
+    try ctx.executarAcao(.{ .invocar_ia = .{
+        .prompt = "pergunta cacheada",
+        .incluir_historico = false,
+    } }, "id");
+
+    try testing.expectEqual(@as(usize, 0), ia.chamadas); // IA não foi chamada
+    try testing.expectEqualStrings("resposta do cache", Captura.instancia.texto);
+}
+
+test "invocar_ia+cache: miss → IA chamada e resultado inserido no cache" {
+    var ia = MockIA{ .resposta = "nova resposta" };
+    var ctx = novoCtx(&ia, .{});
+    defer ctx.deinit();
+
+    var cache = cache_ia_m.CacheIA.init(testing.allocator, .{});
+    defer cache.deinit();
+    ctx.cache_ia = &cache;
+
+    try ctx.executarAcao(.{ .invocar_ia = .{
+        .prompt = "pergunta nova",
+        .incluir_historico = false,
+    } }, "id");
+
+    try testing.expectEqual(@as(usize, 1), ia.chamadas);
+    try testing.expectEqualStrings("nova resposta", Captura.instancia.texto);
+
+    // Verifica que foi inserido no cache
+    const cached = cache.obter("pergunta nova", null, testing.allocator);
+    defer if (cached) |v| testing.allocator.free(v);
+    try testing.expect(cached != null);
+    try testing.expectEqualStrings("nova resposta", cached.?);
+}
+
+test "invocar_ia+cache: incluir_historico=true ignora cache mesmo com hit" {
+    var ia = MockIA{ .resposta = "da IA" };
+    var ctx = novoCtx(&ia, .{});
+    defer ctx.deinit();
+
+    var cache = cache_ia_m.CacheIA.init(testing.allocator, .{});
+    defer cache.deinit();
+    cache.inserir("pergunta", null, "do cache");
+    ctx.cache_ia = &cache;
+
+    // incluir_historico=true (default) → deve pular o cache
+    try ctx.executarAcao(.{ .invocar_ia = .{
+        .prompt = "pergunta",
+        .incluir_historico = true,
+    } }, "id");
+
+    try testing.expectEqual(@as(usize, 1), ia.chamadas); // IA foi chamada mesmo com cache
+    try testing.expectEqualStrings("da IA", Captura.instancia.texto);
+}
+
+test "invocar_ia: prompt sem URL é passado inalterado à IA" {
+    var ia = MockIA{};
+    var ctx = novoCtx(&ia, .{});
+    defer ctx.deinit();
+    try ctx.executarAcao(.{ .invocar_ia = .{
+        .prompt = "sem url aqui",
+        .incluir_historico = false,
+    } }, "id");
+    try testing.expectEqualStrings("sem url aqui", ia.ultimo_prompt);
+}
+
+test "alterar_config: sem DB muda config em memória e envia confirmação" {
+    var ia = MockIA{};
+    var ctx = novoCtx(&ia, Config{ .media_audio = true });
+    defer ctx.deinit();
+
+    try ctx.executarAcao(.{ .alterar_config = .{
+        .campo = "media_audio",
+        .valor = "false",
+    } }, "id");
+
+    try testing.expectEqual(false, ctx.config.media_audio);
+    try testing.expect(std.mem.indexOf(u8, Captura.instancia.texto, "media_audio") != null);
 }
 
 test "handleMensagem+DB: carrega config do banco antes de processar" {
@@ -854,8 +980,8 @@ test "handleMensagem+DB: carrega config do banco antes de processar" {
     // Salva config com áudio habilitado
     try db.salvarConfig(Config{ .chat_id = "test_chat", .media_audio = true });
 
-    var ia  = MockIA{ .resposta = "ok" };
-    // Contexto inicia com config padrão (media_audio = false)
+    var ia = MockIA{ .resposta = "ok" };
+    // Contexto inicia com config padrão (media_audio = true)
     var ctx = novoCtxComDb(&ia, Config{}, &db);
     defer ctx.deinit();
 

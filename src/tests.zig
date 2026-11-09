@@ -15,6 +15,7 @@ comptime {
     // Infra
     _ = @import("infra/http.zig");
     _ = @import("infra/resilience.zig");
+    _ = @import("infra/json_util.zig");
     _ = @import("infra/gemini.zig");
     _ = @import("infra/openrouter.zig");
     _ = @import("infra/sqlite.zig");
@@ -22,6 +23,7 @@ comptime {
     _ = @import("infra/cache_mensagens.zig");
     _ = @import("infra/telemetria.zig");
     _ = @import("infra/google_file_api.zig");
+    _ = @import("infra/http_fetch.zig");
 
     // Shell
     _ = @import("shell/handler.zig");
